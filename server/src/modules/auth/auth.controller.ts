@@ -1,0 +1,61 @@
+import type { Request, Response, CookieOptions } from 'express';
+import * as authService from './auth.service';
+import { sendSuccess } from '../../utils/response';
+import { asyncHandler } from '../../utils/asyncHandler';
+import { AppError } from '../../middleware/error';
+import { env } from '../../config/env';
+import type { LoginInput, RegisterStoreInput } from './auth.schema';
+// refresh token is read from the httpOnly cookie, not the request body
+
+export const REFRESH_COOKIE = 'pos_rt';
+
+const cookieOpts: CookieOptions = {
+  httpOnly: true,
+  secure: env.NODE_ENV === 'production',
+  sameSite: 'strict',
+  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+};
+
+function clearCookie(res: Response) {
+  res.clearCookie(REFRESH_COOKIE, { ...cookieOpts, maxAge: 0 });
+}
+
+// ── Handlers ──────────────────────────────────────────────────────────────────
+
+export const registerStore = asyncHandler(async (req: Request, res: Response) => {
+  const result = await authService.registerStore(req.body as RegisterStoreInput);
+  res.cookie(REFRESH_COOKIE, result.refreshToken, cookieOpts);
+  sendSuccess(
+    res,
+    { accessToken: result.accessToken, user: result.user, store: result.store },
+    'Store registered successfully',
+    201,
+  );
+});
+
+export const login = asyncHandler(async (req: Request, res: Response) => {
+  const result = await authService.loginUser(req.body as LoginInput);
+  res.cookie(REFRESH_COOKIE, result.refreshToken, cookieOpts);
+  sendSuccess(res, { accessToken: result.accessToken, user: result.user }, 'Login successful');
+});
+
+export const refresh = asyncHandler(async (req: Request, res: Response) => {
+  const token = req.cookies[REFRESH_COOKIE] as string | undefined;
+  if (!token) throw new AppError('No refresh token', 401);
+  const result = await authService.refreshTokens(token);
+  res.cookie(REFRESH_COOKIE, result.refreshToken, cookieOpts);
+  sendSuccess(res, { accessToken: result.accessToken }, 'Tokens refreshed');
+});
+
+export const logout = asyncHandler(async (req: Request, res: Response) => {
+  if (req.user) {
+    await authService.logoutUser(req.user.sub);
+  }
+  clearCookie(res);
+  sendSuccess(res, null, 'Logged out successfully');
+});
+
+export const me = asyncHandler(async (req: Request, res: Response) => {
+  const user = await authService.getMe(req.user!.sub);
+  sendSuccess(res, user);
+});

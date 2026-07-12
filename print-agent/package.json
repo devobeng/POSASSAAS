@@ -1,0 +1,31 @@
+{
+  "name": "pos-print-agent",
+  "version": "1.0.0",
+  "description": "Local print agent — bridges POS browser to OS thermal printer on port 9977",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "pkg:win": "pkg dist/index.js --target node18-win-x64 --output bin/print-agent-win.exe",
+    "pkg:mac": "pkg dist/index.js --target node18-macos-x64 --output bin/print-agent-mac",
+    "pkg:linux": "pkg dist/index.js --target node18-linux-x64 --output bin/print-agent-linux"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "node-thermal-printer": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.0",
+    "pkg": "^5.8.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  },
+  "pkg": {
+    "assets": [],
+    "targets": ["node18-win-x64", "node18-macos-x64", "node18-linux-x64"]
+  }
+}

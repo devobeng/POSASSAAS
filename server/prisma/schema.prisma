@@ -1,0 +1,406 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  SUPER_ADMIN
+  STORE_ADMIN
+  BRANCH_MANAGER
+  CASHIER
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  INACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum StockMovementType {
+  PURCHASE
+  SALE
+  ADJUSTMENT
+  TRANSFER_IN
+  TRANSFER_OUT
+  RETURN
+}
+
+enum OrderStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  MOBILE_MONEY
+  PAYSTACK
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum ExpenseStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum RecurringInterval {
+  WEEKLY
+  MONTHLY
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      Role
+  isActive  Boolean  @default(true)
+  storeId   String?
+  branchId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // auth / lockout fields
+  hashedRefreshToken  String?
+  failedLoginAttempts Int       @default(0)
+  lockedUntil         DateTime?
+  mustChangePassword  Boolean   @default(false)
+
+  store               Store?          @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  branch              Branch?         @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  orders              Order[]
+  stockMovements      StockMovement[]
+  auditLogs           AuditLog[]
+  expensesRecorded    Expense[]       @relation("ExpenseRecorder")
+  expensesApproved    Expense[]       @relation("ExpenseApprover")
+
+  @@index([storeId])
+  @@index([branchId])
+  @@map("users")
+}
+
+model Store {
+  id                   String             @id @default(cuid())
+  name                 String
+  slug                 String             @unique
+  logoUrl              String?
+  currency             String             @default("NGN")
+  subscriptionStatus   SubscriptionStatus @default(TRIAL)
+  paystackCustomerCode String?
+  subscriptionPlanId   String?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  subscriptionPlan   SubscriptionPlan?  @relation(fields: [subscriptionPlanId], references: [id], onDelete: SetNull)
+  users              User[]
+  branches           Branch[]
+  categories         Category[]
+  products           Product[]
+  orders             Order[]
+  auditLogs          AuditLog[]
+  receiptSettings    ReceiptSettings?
+  expenseCategories  ExpenseCategory[]
+  expenses           Expense[]
+
+  @@index([slug])
+  @@map("stores")
+}
+
+model ReceiptSettings {
+  id                     String   @id @default(cuid())
+  storeId                String   @unique
+  headerText             String?
+  footerText             String?
+  paperWidth             Int      @default(80)   // 58 or 80
+  showLogo               Boolean  @default(true)
+  showQrCode             Boolean  @default(true)
+  weightedBarcodeEnabled Boolean  @default(false)
+  weightedBarcodeType    String   @default("price") // "price" | "weight"
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@map("receipt_settings")
+}
+
+model Branch {
+  id        String   @id @default(cuid())
+  storeId   String
+  name      String
+  address   String?
+  phone     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  store          Store           @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  users          User[]
+  inventoryItems InventoryItem[]
+  orders         Order[]
+  expenses       Expense[]
+
+  @@unique([storeId, name])
+  @@index([storeId])
+  @@map("branches")
+}
+
+model Category {
+  id        String   @id @default(cuid())
+  storeId   String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  store    Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@unique([storeId, name])
+  @@index([storeId])
+  @@index([storeId, updatedAt])
+  @@map("categories")
+}
+
+model Product {
+  id           String   @id @default(cuid())
+  storeId      String
+  categoryId   String?
+  name         String
+  sku          String
+  barcode      String?
+  imageUrl     String?
+  costPrice    Decimal  @db.Decimal(12, 2)
+  sellingPrice Decimal  @db.Decimal(12, 2)
+  taxRate      Decimal  @default(0) @db.Decimal(5, 2)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  store          Store           @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  category       Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  inventoryItems InventoryItem[]
+  orderItems     OrderItem[]
+
+  @@unique([storeId, sku])
+  @@index([storeId])
+  @@index([categoryId])
+  @@index([storeId, isActive])
+  @@index([storeId, updatedAt])
+  @@map("products")
+}
+
+// Stock is tracked per-branch — the pivot between Product and Branch
+model InventoryItem {
+  id                String   @id @default(cuid())
+  productId         String
+  branchId          String
+  quantity          Int      @default(0)
+  lowStockThreshold Int      @default(10)
+  updatedAt         DateTime @updatedAt
+
+  product        Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  branch         Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  stockMovements StockMovement[]
+
+  @@unique([productId, branchId])
+  @@index([branchId])
+  @@index([productId])
+  @@index([branchId, updatedAt])
+  @@map("inventory_items")
+}
+
+model StockMovement {
+  id              String            @id @default(cuid())
+  inventoryItemId String
+  type            StockMovementType
+  quantity        Int
+  note            String?
+  userId          String
+  createdAt       DateTime          @default(now())
+
+  inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+  user          User          @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([inventoryItemId])
+  @@index([userId])
+  @@index([createdAt])
+  @@index([inventoryItemId, createdAt])
+  @@map("stock_movements")
+}
+
+model Order {
+  id               String      @id @default(cuid())
+  orderNumber      String      @unique
+  storeId          String
+  branchId         String
+  cashierId        String
+  status           OrderStatus @default(PENDING)
+  subtotal         Decimal     @db.Decimal(12, 2)
+  taxTotal         Decimal     @db.Decimal(12, 2)
+  discountTotal    Decimal     @default(0) @db.Decimal(12, 2)
+  grandTotal       Decimal     @db.Decimal(12, 2)
+  // Offline-first fields
+  clientOrderId    String?     // UUID generated on device — idempotency key
+  createdAtClient  DateTime?   // device timestamp of the sale (business timestamp)
+  offlineReference String?     // e.g. "OFF-DEV123-0042" printed on the offline receipt
+  stockDiscrepancy Boolean     @default(false) // true when offline sale allowed negative stock
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  store    Store       @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  branch   Branch      @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  cashier  User        @relation(fields: [cashierId], references: [id], onDelete: Restrict)
+  items    OrderItem[]
+  payments Payment[]
+
+  @@unique([storeId, clientOrderId])  // same device UUID cannot create duplicate orders per store
+  @@index([storeId])
+  @@index([branchId])
+  @@index([cashierId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([storeId, createdAt])       // most common reporting query pattern
+  @@index([branchId, status])
+  @@index([stockDiscrepancy])         // discrepancy report query
+  @@map("orders")
+}
+
+// Snapshot fields (productName, unitPrice) preserve order history even if product changes
+model OrderItem {
+  id          String  @id @default(cuid())
+  orderId     String
+  productId   String?
+  productName String
+  unitPrice   Decimal @db.Decimal(12, 2)
+  quantity    Int
+  lineTotal   Decimal @db.Decimal(12, 2)
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("order_items")
+}
+
+model Payment {
+  id                String        @id @default(cuid())
+  orderId           String
+  method            PaymentMethod
+  amount            Decimal       @db.Decimal(12, 2)
+  paystackReference String?       @unique
+  status            PaymentStatus @default(PENDING)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([status])
+  @@map("payments")
+}
+
+model SubscriptionPlan {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  price       Decimal  @db.Decimal(12, 2)
+  maxBranches Int
+  maxUsers    Int
+  features    Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  stores Store[]
+
+  @@map("subscription_plans")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  storeId   String?
+  userId    String
+  action    String
+  entity    String
+  entityId  String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  store Store? @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  user  User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([storeId])
+  @@index([userId])
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@index([storeId, createdAt])
+  @@map("audit_logs")
+}
+
+model ExpenseCategory {
+  id        String   @id @default(cuid())
+  storeId   String
+  name      String
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  store    Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  expenses Expense[]
+
+  @@unique([storeId, name])
+  @@index([storeId])
+  @@map("expense_categories")
+}
+
+model Expense {
+  id                String             @id @default(cuid())
+  storeId           String
+  branchId          String?
+  categoryId        String
+  amount            Int
+  description       String
+  expenseDate       DateTime           @db.Date
+  receiptImageUrl   String?
+  isRecurring       Boolean            @default(false)
+  recurringInterval RecurringInterval?
+  nextDueDate       DateTime?          @db.Date
+  recordedById      String
+  status            ExpenseStatus      @default(PENDING)
+  approvedById      String?
+  rejectionNote     String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  store      Store           @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  branch     Branch?         @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  category   ExpenseCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  recordedBy User            @relation("ExpenseRecorder", fields: [recordedById], references: [id], onDelete: Restrict)
+  approvedBy User?           @relation("ExpenseApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+
+  @@index([storeId, expenseDate])
+  @@index([branchId, expenseDate])
+  @@index([storeId, status])
+  @@index([categoryId])
+  @@index([isRecurring, nextDueDate])
+  @@map("expenses")
+}

@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+  }
+
+  body {
+    @apply antialiased;
+  }
+
+  /* Smooth transitions for theme switch */
+  *, *::before, *::after {
+    transition-property: background-color, border-color;
+    transition-duration: 150ms;
+    transition-timing-function: ease;
+  }
+
+  /* Reset transition on interactive elements to avoid sluggishness */
+  button, a, input, select, textarea {
+    transition-property: color, background-color, border-color, opacity, box-shadow, transform;
+    transition-duration: 150ms;
+  }
+}
+
+/* Hide scrollbar for category tabs while keeping scroll functionality */
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* ── 80mm thermal receipt print stylesheet ──────────────────────────────────── */
+@media print {
+  /* Hide everything except the receipt */
+  body > * {
+    display: none !important;
+  }
+
+  /* The receipt portal root that React mounts into is a sibling of <body> children */
+  .receipt-print {
+    display: block !important;
+    position: static !important;
+    width: 80mm;
+    max-width: 80mm;
+    margin: 0 auto;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    color: #000;
+    background: #fff;
+  }
+
+  /* Ensure modal wrappers don't interfere */
+  [class*="fixed"],
+  [class*="inset"] {
+    position: static !important;
+    background: none !important;
+    padding: 0 !important;
+  }
+
+  @page {
+    margin: 4mm;
+    size: 80mm auto;
+  }
+}
