@@ -63,7 +63,7 @@ describe('POST /api/v1/users — role hierarchy', () => {
     const res = await request(app)
       .post('/api/v1/users')
       .set('Authorization', `Bearer ${token('BRANCH_MANAGER', { branchId: BRANCH_ID })}`)
-      .send({ email: 'peer@test.com', name: 'Peer Manager', role: 'BRANCH_MANAGER' });
+      .send({ phone: '+233200000010', email: 'peer@test.com', name: 'Peer Manager', role: 'BRANCH_MANAGER' });
 
     expect(res.status).toBe(403);
     expect(res.body.message).toMatch(/equal to or higher/i);
@@ -72,10 +72,11 @@ describe('POST /api/v1/users — role hierarchy', () => {
   it('BRANCH_MANAGER can create CASHIER → 201 (branchId auto-set from token)', async () => {
     prisma.store.findUnique.mockResolvedValue({ subscriptionPlan: { maxUsers: 50 } });
     prisma.user.count.mockResolvedValue(5);
-    prisma.user.findUnique.mockResolvedValue(null); // email not taken
+    prisma.user.findFirst.mockResolvedValue(null); // email/phone not taken
     prisma.user.create.mockResolvedValue({
       id: 'user-new',
       email: 'cashier@test.com',
+      phone: '+233200000011',
       name: 'New Cashier',
       role: 'CASHIER',
       storeId: STORE_ID,
@@ -88,7 +89,7 @@ describe('POST /api/v1/users — role hierarchy', () => {
     const res = await request(app)
       .post('/api/v1/users')
       .set('Authorization', `Bearer ${token('BRANCH_MANAGER', { branchId: BRANCH_ID })}`)
-      .send({ email: 'cashier@test.com', name: 'New Cashier', role: 'CASHIER' });
+      .send({ phone: '+233200000011', email: 'cashier@test.com', name: 'New Cashier', role: 'CASHIER' });
 
     expect(res.status).toBe(201);
     expect(res.body.data.user.mustChangePassword).toBe(true);
@@ -106,10 +107,11 @@ describe('POST /api/v1/users — role hierarchy', () => {
   it('STORE_ADMIN can create BRANCH_MANAGER → 201', async () => {
     prisma.store.findUnique.mockResolvedValue({ subscriptionPlan: { maxUsers: 50 } });
     prisma.user.count.mockResolvedValue(3);
-    prisma.user.findUnique.mockResolvedValue(null);
+    prisma.user.findFirst.mockResolvedValue(null);
     prisma.user.create.mockResolvedValue({
       id: 'user-mgr',
       email: 'mgr@test.com',
+      phone: '+233200000012',
       name: 'New Manager',
       role: 'BRANCH_MANAGER',
       storeId: STORE_ID,
@@ -122,21 +124,21 @@ describe('POST /api/v1/users — role hierarchy', () => {
     const res = await request(app)
       .post('/api/v1/users')
       .set('Authorization', `Bearer ${token('STORE_ADMIN')}`)
-      .send({ email: 'mgr@test.com', name: 'New Manager', role: 'BRANCH_MANAGER', branchId: BRANCH_ID });
+      .send({ phone: '+233200000012', email: 'mgr@test.com', name: 'New Manager', role: 'BRANCH_MANAGER', branchId: BRANCH_ID });
 
     expect(res.status).toBe(201);
     expect(res.body.data.tempPassword).toBeDefined();
   });
 
-  it('returns 409 when email already exists', async () => {
+  it('returns 409 when email or phone already exists', async () => {
     prisma.store.findUnique.mockResolvedValue({ subscriptionPlan: { maxUsers: 50 } });
     prisma.user.count.mockResolvedValue(3);
-    prisma.user.findUnique.mockResolvedValue({ id: 'existing-user' }); // email taken
+    prisma.user.findFirst.mockResolvedValue({ id: 'existing-user' }); // email/phone taken
 
     const res = await request(app)
       .post('/api/v1/users')
       .set('Authorization', `Bearer ${token('STORE_ADMIN')}`)
-      .send({ email: 'taken@test.com', name: 'Duplicate', role: 'CASHIER' });
+      .send({ phone: '+233200000013', email: 'taken@test.com', name: 'Duplicate', role: 'CASHIER' });
 
     expect(res.status).toBe(409);
   });
@@ -154,7 +156,7 @@ describe('POST /api/v1/users — plan limit', () => {
     const res = await request(app)
       .post('/api/v1/users')
       .set('Authorization', `Bearer ${token('STORE_ADMIN')}`)
-      .send({ email: 'extra@test.com', name: 'Extra User', role: 'CASHIER' });
+      .send({ phone: '+233200000014', email: 'extra@test.com', name: 'Extra User', role: 'CASHIER' });
 
     expect(res.status).toBe(402);
     expect(res.body.message).toMatch(/user limit/i);
@@ -220,7 +222,16 @@ describe('POST /api/v1/users — schema validation', () => {
     const res = await request(app)
       .post('/api/v1/users')
       .set('Authorization', `Bearer ${token('STORE_ADMIN')}`)
-      .send({ email: 'not-an-email', name: 'X', role: 'CASHIER' });
+      .send({ phone: '+233200000015', email: 'not-an-email', name: 'X', role: 'CASHIER' });
+
+    expect(res.status).toBe(422);
+  });
+
+  it('rejects an invalid phone number → 422', async () => {
+    const res = await request(app)
+      .post('/api/v1/users')
+      .set('Authorization', `Bearer ${token('STORE_ADMIN')}`)
+      .send({ phone: 'not-a-phone', name: 'X', role: 'CASHIER' });
 
     expect(res.status).toBe(422);
   });
@@ -229,7 +240,7 @@ describe('POST /api/v1/users — schema validation', () => {
     const res = await request(app)
       .post('/api/v1/users')
       .set('Authorization', `Bearer ${token('STORE_ADMIN')}`)
-      .send({ email: 'new@test.com', name: 'X', role: 'STORE_ADMIN' });
+      .send({ phone: '+233200000016', email: 'new@test.com', name: 'X', role: 'STORE_ADMIN' });
 
     // Zod rejects unknown enum value before the service runs
     expect(res.status).toBe(422);

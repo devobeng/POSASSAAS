@@ -21,9 +21,17 @@ async function assertBranchLimit(storeId: string): Promise<void> {
   }
 }
 
-export async function getBranches(storeId: string) {
+// BRANCH_MANAGER and CASHIER are fixed to one branch — they never need, and
+// shouldn't see, other branches' names/details. STORE_ADMIN/SUPER_ADMIN see
+// the whole store.
+const RESTRICTED_ROLES = new Set(['BRANCH_MANAGER', 'CASHIER']);
+
+export async function getBranches(storeId: string, role: string, userBranchId?: string) {
   return prisma.branch.findMany({
-    where: { storeId },
+    where: {
+      storeId,
+      ...(RESTRICTED_ROLES.has(role) && { id: userBranchId }),
+    },
     orderBy: [{ isActive: 'desc' }, { name: 'asc' }],
     include: {
       _count: { select: { users: { where: { isActive: true } }, orders: true } },
@@ -31,7 +39,18 @@ export async function getBranches(storeId: string) {
   });
 }
 
-export async function getBranch(storeId: string, branchId: string) {
+export async function getBranch(
+  storeId: string,
+  branchId: string,
+  role: string,
+  userBranchId?: string,
+) {
+  if (RESTRICTED_ROLES.has(role) && branchId !== userBranchId) {
+    // Same "not found" (not 403) as other branch-scoped lookups in this app —
+    // don't reveal that a branch exists at all to someone who can't see it.
+    throw new AppError('Branch not found', 404);
+  }
+
   const branch = await prisma.branch.findFirst({
     where: { id: branchId, storeId },
     include: {

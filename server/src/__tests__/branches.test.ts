@@ -28,9 +28,11 @@ const { prisma } = require('../config/database') as {
 };
 
 const STORE_ID = 'store-abc';
+const BRANCH_ID = 'branch-1';
+const OTHER_BRANCH_ID = 'branch-2';
 
-function token(role: string) {
-  return signAccessToken({ sub: `user-${role}`, email: `${role}@test.com`, role, storeId: STORE_ID });
+function token(role: string, branchId?: string) {
+  return signAccessToken({ sub: `user-${role}`, email: `${role}@test.com`, role, storeId: STORE_ID, branchId });
 }
 
 describe('Branch access control', () => {
@@ -153,5 +155,52 @@ describe('Branch soft-delete', () => {
       .set('Authorization', `Bearer ${token('STORE_ADMIN')}`);
 
     expect(res.status).toBe(404);
+  });
+});
+
+describe('Branch visibility — BRANCH_MANAGER/CASHIER scoped to their own branch', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('GET /branches only queries the caller\'s own branch for BRANCH_MANAGER', async () => {
+    prisma.branch.findMany.mockResolvedValue([{ id: BRANCH_ID, name: 'Main Branch' }]);
+
+    const res = await request(app)
+      .get('/api/v1/branches')
+      .set('Authorization', `Bearer ${token('BRANCH_MANAGER', BRANCH_ID)}`);
+
+    expect(res.status).toBe(200);
+    expect(prisma.branch.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ storeId: STORE_ID, id: BRANCH_ID }) }),
+    );
+  });
+
+  it('GET /branches is NOT restricted to one branch for STORE_ADMIN', async () => {
+    prisma.branch.findMany.mockResolvedValue([]);
+
+    await request(app)
+      .get('/api/v1/branches')
+      .set('Authorization', `Bearer ${token('STORE_ADMIN')}`);
+
+    const whereArg = prisma.branch.findMany.mock.calls[0][0].where;
+    expect(whereArg).not.toHaveProperty('id');
+  });
+
+  it('GET /branches/:id returns 404 for CASHIER requesting a different branch', async () => {
+    const res = await request(app)
+      .get(`/api/v1/branches/${OTHER_BRANCH_ID}`)
+      .set('Authorization', `Bearer ${token('CASHIER', BRANCH_ID)}`);
+
+    expect(res.status).toBe(404);
+    expect(prisma.branch.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('GET /branches/:id succeeds for BRANCH_MANAGER requesting their own branch', async () => {
+    prisma.branch.findFirst.mockResolvedValue({ id: BRANCH_ID, name: 'Main Branch' });
+
+    const res = await request(app)
+      .get(`/api/v1/branches/${BRANCH_ID}`)
+      .set('Authorization', `Bearer ${token('BRANCH_MANAGER', BRANCH_ID)}`);
+
+    expect(res.status).toBe(200);
   });
 });

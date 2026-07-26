@@ -44,6 +44,19 @@ api.interceptors.response.use(
   async (error: AxiosError) => {
     const original = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
 
+    // Subscription lapsed (trial expired / plan cancelled) — send the store
+    // admin to pick a plan instead of showing a raw 402 on whatever action
+    // they were trying to take.
+    if (
+      error.response?.status === 402 &&
+      (error.response.data as { errors?: string } | undefined)?.errors === 'SUBSCRIPTION_INACTIVE' &&
+      typeof window !== 'undefined' &&
+      !window.location.pathname.startsWith('/select-plan')
+    ) {
+      window.location.href = '/select-plan';
+      return Promise.reject(error);
+    }
+
     // Skip refresh loop for non-401 errors or if this is already a retry
     if (
       error.response?.status !== 401 ||

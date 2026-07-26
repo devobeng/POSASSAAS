@@ -3,12 +3,14 @@ import { env } from './config/env';
 import { prisma } from './config/database';
 import { logger } from './utils/logger';
 import { startExpenseCron } from './modules/expenses/expenses.cron';
+import { startSubscriptionCron } from './modules/payments/subscription.cron';
 
 async function bootstrap() {
   await prisma.$connect();
   logger.info('Database connected');
 
   startExpenseCron();
+  startSubscriptionCron();
 
   const server = app.listen(env.PORT, () => {
     logger.info(`Server running on port ${env.PORT} [${env.NODE_ENV}]`);

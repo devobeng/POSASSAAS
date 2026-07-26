@@ -1,7 +1,11 @@
 import { z } from 'zod';
+import { isValidPhone } from '../../utils/phone';
+
+const phoneSchema = z.string().refine(isValidPhone, 'Enter a valid phone number');
 
 export const createUserSchema = z.object({
-  email: z.string().email(),
+  phone: phoneSchema,
+  email: z.string().email().optional(),
   name: z.string().min(2).max(100),
   role: z.enum(['BRANCH_MANAGER', 'CASHIER']),
   branchId: z.string().optional(),

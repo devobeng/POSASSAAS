@@ -3,6 +3,7 @@ import * as ordersService from './orders.service';
 import { sendSuccess } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { AppError } from '../../middleware/error';
+import { resolveStoreIdForRequest } from '../../middleware/tenant';
 import { createOrderSchema, orderListQuerySchema } from './orders.schema';
 import { getIdempotentResult, setIdempotentResult } from '../../utils/idempotency';
 
@@ -38,8 +39,8 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
 
 export const listOrders = asyncHandler(async (req: Request, res: Response) => {
   const query = orderListQuerySchema.parse(req.query);
-  const { sub: userId, role, branchId, storeId: userStoreId } = req.user!;
-  const storeId = req.storeId ?? userStoreId;
+  const { sub: userId, role, branchId } = req.user!;
+  const storeId = resolveStoreIdForRequest(req);
 
   const result = await ordersService.getOrders(role, userId, storeId, branchId, query);
 
@@ -54,8 +55,8 @@ export const listOrders = asyncHandler(async (req: Request, res: Response) => {
 // ─── Get single order ─────────────────────────────────────────────────────────
 
 export const getOrder = asyncHandler(async (req: Request, res: Response) => {
-  const { sub: userId, role, branchId, storeId: userStoreId } = req.user!;
-  const storeId = req.storeId ?? userStoreId;
+  const { sub: userId, role, branchId } = req.user!;
+  const storeId = resolveStoreIdForRequest(req);
 
   const order = await ordersService.getOrder(
     role,
@@ -71,8 +72,8 @@ export const getOrder = asyncHandler(async (req: Request, res: Response) => {
 // ─── Refund order ─────────────────────────────────────────────────────────────
 
 export const refundOrder = asyncHandler(async (req: Request, res: Response) => {
-  const { sub: userId, role, branchId, storeId: userStoreId } = req.user!;
-  const storeId = (req.storeId ?? userStoreId)!;
+  const { sub: userId, role, branchId } = req.user!;
+  const storeId = resolveStoreIdForRequest(req);
 
   const order = await ordersService.refundOrder(
     storeId,
@@ -88,8 +89,8 @@ export const refundOrder = asyncHandler(async (req: Request, res: Response) => {
 // ─── Receipt ──────────────────────────────────────────────────────────────────
 
 export const getReceipt = asyncHandler(async (req: Request, res: Response) => {
-  const { sub: userId, role, branchId, storeId: userStoreId } = req.user!;
-  const storeId = (req.storeId ?? userStoreId)!;
+  const { sub: userId, role, branchId } = req.user!;
+  const storeId = resolveStoreIdForRequest(req);
 
   const receipt = await ordersService.getReceipt(
     storeId,

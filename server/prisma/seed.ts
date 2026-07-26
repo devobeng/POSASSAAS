@@ -64,6 +64,7 @@ async function main() {
     update: {},
     create: {
       email: 'superadmin@pos.com',
+      phone: '+233200000000',
       password: await bcrypt.hash('SuperAdmin@123', 12),
       name: 'Super Admin',
       role: Role.SUPER_ADMIN,
@@ -120,6 +121,7 @@ async function main() {
       update: {},
       create: {
         email: 'admin@demo-store.com',
+        phone: '+233200000001',
         password: await bcrypt.hash('StoreAdmin@123', 12),
         name: 'Store Admin',
         role: Role.STORE_ADMIN,
@@ -131,6 +133,7 @@ async function main() {
       update: {},
       create: {
         email: 'manager@demo-store.com',
+        phone: '+233200000002',
         password: await bcrypt.hash('Manager@123', 12),
         name: 'Branch Manager',
         role: Role.BRANCH_MANAGER,
@@ -143,6 +146,7 @@ async function main() {
       update: {},
       create: {
         email: 'cashier@demo-store.com',
+        phone: '+233200000003',
         password: await bcrypt.hash('Cashier@123', 12),
         name: 'Jane Cashier',
         role: Role.CASHIER,

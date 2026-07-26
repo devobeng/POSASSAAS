@@ -1,12 +1,15 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { Package, Camera } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import Drawer from '@/components/ui/Drawer';
+import BarcodeCamera from '@/components/pos/BarcodeCamera';
 import { useCreateProduct, useUpdateProduct } from '@/hooks/api/useProducts';
-import { useCategories } from '@/hooks/api/useCategories';
+import { useCategories, useCreateCategory } from '@/hooks/api/useCategories';
 import { useUiStore } from '@/store/uiStore';
 import api from '@/lib/axios';
-import type { Product } from '@/types';
+import type { ApiResponse, Product } from '@/types';
 import Image from 'next/image';
 
 interface Props {
@@ -52,9 +55,15 @@ export default function ProductDrawer({ open, product, onClose }: Props) {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  const qc = useQueryClient();
   const { data: categories } = useCategories();
   const { mutateAsync: createProduct, isPending: isCreating } = useCreateProduct();
   const { mutateAsync: updateProduct, isPending: isUpdating } = useUpdateProduct(product?.id ?? '');
+  const { mutateAsync: createCategory, isPending: isCreatingCategory } = useCreateCategory();
+
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [scanningBarcode, setScanningBarcode] = useState(false);
 
   const isEditing = !!product;
   const isPending = isCreating || isUpdating;
@@ -64,11 +73,45 @@ export default function ProductDrawer({ open, product, onClose }: Props) {
       setForm(product ? toForm(product) : EMPTY);
       setImageFile(null);
       setImagePreview(product?.imageUrl ?? null);
+      setAddingCategory(false);
+      setNewCategoryName('');
     }
   }, [open, product]);
 
   const set = (key: keyof FormState, value: string | boolean) =>
     setForm((f) => ({ ...f, [key]: value }));
+
+  const handleCreateCategory = async () => {
+    if (!newCategoryName.trim()) return;
+    try {
+      const category = await createCategory({ name: newCategoryName.trim() });
+      set('categoryId', category.id);
+      setAddingCategory(false);
+      setNewCategoryName('');
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { message?: string } } };
+      toast(e.response?.data?.message ?? 'Failed to create category', 'error');
+    }
+  };
+
+  const handleBarcodeScan = async (barcode: string) => {
+    setScanningBarcode(false);
+    set('barcode', barcode);
+
+    // Warn (don't block) if another product already uses this barcode —
+    // search is a "contains" match server-side, so filter for an exact hit.
+    try {
+      const res = await api.get<ApiResponse<Product[]>>('/products', {
+        params: { search: barcode, limit: 5 },
+      });
+      const match = res.data.data.find((p) => p.barcode === barcode && p.id !== product?.id);
+      if (match) {
+        toast(`Barcode already used by "${match.name}"`, 'warning');
+      }
+    } catch {
+      // Non-critical — the field is filled either way
+    }
+  };
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -101,9 +144,14 @@ export default function ProductDrawer({ open, product, onClose }: Props) {
         try {
           const formData = new FormData();
           formData.append('image', imageFile);
-          await api.patch(`/products/${saved.id}/image`, formData, {
+          await api.post(`/products/${saved.id}/image`, formData, {
             headers: { 'Content-Type': 'multipart/form-data' },
           });
+          // createProduct/updateProduct already invalidated ['products'] right
+          // after save, before the image existed — without this, the list
+          // stays on that stale (imageless) snapshot until something else
+          // happens to refetch it.
+          qc.invalidateQueries({ queryKey: ['products'] });
         } catch {
           toast('Product saved but image upload failed', 'warning');
         }
@@ -143,6 +191,7 @@ export default function ProductDrawer({ open, product, onClose }: Props) {
   );
 
   return (
+    <>
     <Drawer
       open={open}
       onClose={onClose}
@@ -177,7 +226,7 @@ export default function ProductDrawer({ open, product, onClose }: Props) {
               {imagePreview ? (
                 <Image src={imagePreview} alt="preview" width={64} height={64} className="w-full h-full object-cover" />
               ) : (
-                <span className="text-2xl">📦</span>
+                <Package className="w-6 h-6 text-gray-400" />
               )}
             </div>
             <div className="space-y-0.5">
@@ -199,19 +248,75 @@ export default function ProductDrawer({ open, product, onClose }: Props) {
 
         <div className="grid grid-cols-2 gap-3">
           {field('SKU', 'sku', 'text', 'Auto-generated if blank')}
-          {field('Barcode', 'barcode', 'text', 'EAN / UPC')}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Barcode</label>
+            <div className="flex gap-1.5">
+              <input
+                type="text"
+                value={form.barcode}
+                onChange={(e) => set('barcode', e.target.value)}
+                placeholder="EAN / UPC"
+                className={inputClass}
+              />
+              <button
+                type="button"
+                onClick={() => setScanningBarcode(true)}
+                title="Scan barcode with camera"
+                className="shrink-0 w-9 flex items-center justify-center border border-gray-200 dark:border-gray-700 rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                <Camera className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
         </div>
 
         <div>
           <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Category</label>
-          <select
-            value={form.categoryId}
-            onChange={(e) => set('categoryId', e.target.value)}
-            className={inputClass}
-          >
-            <option value="">No category</option>
-            {categories?.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
+          {addingCategory ? (
+            <div className="flex gap-2">
+              <input
+                type="text"
+                autoFocus
+                required
+                placeholder="New category name"
+                value={newCategoryName}
+                onChange={(e) => setNewCategoryName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { e.preventDefault(); void handleCreateCategory(); }
+                  if (e.key === 'Escape') { setAddingCategory(false); setNewCategoryName(''); }
+                }}
+                className={inputClass}
+              />
+              <button
+                type="button"
+                onClick={() => void handleCreateCategory()}
+                disabled={isCreatingCategory || !newCategoryName.trim()}
+                className="px-3 py-2 text-sm bg-primary-600 hover:bg-primary-700 text-white rounded-lg font-medium disabled:opacity-50 whitespace-nowrap"
+              >
+                Add
+              </button>
+              <button
+                type="button"
+                onClick={() => { setAddingCategory(false); setNewCategoryName(''); }}
+                className="px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg text-gray-600 dark:text-gray-400"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <select
+              value={form.categoryId}
+              onChange={(e) => {
+                if (e.target.value === '__new__') { setAddingCategory(true); return; }
+                set('categoryId', e.target.value);
+              }}
+              className={inputClass}
+            >
+              <option value="">No category</option>
+              {categories?.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              <option value="__new__">+ New category…</option>
+            </select>
+          )}
         </div>
 
         <div className="grid grid-cols-3 gap-3">
@@ -235,5 +340,10 @@ export default function ProductDrawer({ open, product, onClose }: Props) {
         </div>
       </form>
     </Drawer>
+
+    {scanningBarcode && (
+      <BarcodeCamera onScan={handleBarcodeScan} onClose={() => setScanningBarcode(false)} />
+    )}
+    </>
   );
 }

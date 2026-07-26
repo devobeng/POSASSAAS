@@ -21,6 +21,7 @@ export default function RegisterPage() {
   const [form, setForm] = useState({
     storeName: '',
     ownerName: '',
+    phone: '',
     email: '',
     password: '',
     confirmPassword: '',
@@ -34,7 +35,7 @@ export default function RegisterPage() {
         .then((r) => r.data.data),
     onSuccess: (data) => {
       setAuth(data.user, data.accessToken);
-      router.push('/dashboard');
+      router.push('/select-plan');
     },
     onError: (err: { response?: { data?: { message?: string } } }) => {
       setError(err.response?.data?.message ?? 'Registration failed');
@@ -91,6 +92,7 @@ export default function RegisterPage() {
       <form onSubmit={handleSubmit} className="space-y-4">
         {field('storeName', 'Store name', 'text', 'My Awesome Store')}
         {field('ownerName', 'Your name', 'text', 'Jane Doe')}
+        {field('phone', 'Phone number', 'tel', '0244123456')}
         {field('email', 'Email address', 'email', 'you@example.com')}
         {field('password', 'Password', 'password', '••••••••')}
         {field('confirmPassword', 'Confirm password', 'password', '••••••••')}

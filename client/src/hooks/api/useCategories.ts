@@ -23,21 +23,21 @@ export function useCreateCategory() {
   });
 }
 
-export function useUpdateCategory(id: string) {
+export function useUpdateCategory() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { name: string }) =>
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
       api
-        .patch<ApiResponse<Category>>(`/categories/${id}`, data)
+        .patch<ApiResponse<Category>>(`/categories/${id}`, { name })
         .then((r) => r.data.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['categories'] }),
   });
 }
 
-export function useDeleteCategory(id: string) {
+export function useDeleteCategory() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.delete(`/categories/${id}`),
+    mutationFn: (id: string) => api.delete(`/categories/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['categories'] }),
   });
 }

@@ -33,53 +33,67 @@ export async function getInventory(
 
   const { search, categoryId, page, limit } = query;
 
-  const where: Prisma.InventoryItemWhereInput = {
-    branchId,
-    product: {
-      storeId,
-      isActive: true,
-      ...(categoryId && { categoryId }),
-      ...(search && {
-        OR: [
-          { name: { contains: search, mode: 'insensitive' } },
-          { sku: { contains: search, mode: 'insensitive' } },
-          { barcode: { contains: search, mode: 'insensitive' } },
-        ],
-      }),
-    },
+  // Base the list on Product (not InventoryItem) so a brand-new product with
+  // no stock record for this branch yet still shows up — with quantity 0 —
+  // instead of being invisible until someone finds another way to create its
+  // first InventoryItem row. adjustStock() already upserts that row on demand.
+  const where: Prisma.ProductWhereInput = {
+    storeId,
+    isActive: true,
+    ...(categoryId && { categoryId }),
+    ...(search && {
+      OR: [
+        { name: { contains: search, mode: 'insensitive' } },
+        { sku: { contains: search, mode: 'insensitive' } },
+        { barcode: { contains: search, mode: 'insensitive' } },
+      ],
+    }),
   };
 
-  const [items, total] = await Promise.all([
-    prisma.inventoryItem.findMany({
+  const [products, total] = await Promise.all([
+    prisma.product.findMany({
       where,
-      include: {
-        product: {
-          select: {
-            id: true,
-            name: true,
-            sku: true,
-            barcode: true,
-            imageUrl: true,
-            sellingPrice: true,
-            costPrice: true,
-            taxRate: true,
-            category: { select: { id: true, name: true } },
-          },
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        barcode: true,
+        imageUrl: true,
+        sellingPrice: true,
+        costPrice: true,
+        taxRate: true,
+        category: { select: { id: true, name: true } },
+        inventoryItems: {
+          where: { branchId },
+          select: { id: true, quantity: true, lowStockThreshold: true, updatedAt: true },
         },
       },
-      orderBy: { product: { name: 'asc' } },
+      orderBy: { name: 'asc' },
       skip: (page - 1) * limit,
       take: limit,
     }),
-    prisma.inventoryItem.count({ where }),
+    prisma.product.count({ where }),
   ]);
 
-  const enriched = items.map((item) => ({
-    ...item,
-    isLowStock: item.quantity <= item.lowStockThreshold,
-  }));
+  const items = products.map(({ inventoryItems, ...product }) => {
+    const stock = inventoryItems[0];
+    const quantity = stock?.quantity ?? 0;
+    const lowStockThreshold = stock?.lowStockThreshold ?? 10;
+    return {
+      // Synthetic id for products never stocked yet — there's no real
+      // InventoryItem row to reference; productId is what adjustStock() uses.
+      id: stock?.id ?? `unstocked:${product.id}:${branchId}`,
+      productId: product.id,
+      branchId,
+      quantity,
+      lowStockThreshold,
+      updatedAt: stock?.updatedAt ?? null,
+      product,
+      isLowStock: quantity <= lowStockThreshold,
+    };
+  });
 
-  return { items: enriched, total, page, limit, totalPages: Math.ceil(total / limit) };
+  return { items, total, page, limit, totalPages: Math.ceil(total / limit) };
 }
 
 // ─── Stock adjustment ─────────────────────────────────────────────────────────
@@ -97,49 +111,46 @@ export async function adjustStock(params: {
   await assertBranchInStore(storeId, branchId);
   await assertProductInStore(storeId, productId);
 
-  return prisma.$transaction(async (tx) => {
-    // Upsert inventory item so adjustments on new products create the record
-    await tx.inventoryItem.upsert({
-      where: { productId_branchId: { productId, branchId } },
-      create: { productId, branchId, quantity: 0, lowStockThreshold: 10 },
-      update: {},
-    });
-
-    let updatedItem;
-
-    if (quantity < 0) {
-      // Atomic guard: only decrement if there is sufficient stock.
-      // updateMany returns count=0 if the WHERE condition (quantity >= |delta|) is not met,
-      // which prevents negative stock even under concurrent requests.
-      const result = await tx.inventoryItem.updateMany({
-        where: { productId, branchId, quantity: { gte: -quantity } },
-        data: { quantity: { increment: quantity } },
-      });
-      if (result.count === 0) {
-        throw new AppError('Insufficient stock for this adjustment', 400);
-      }
-      updatedItem = await tx.inventoryItem.findUnique({
-        where: { productId_branchId: { productId, branchId } },
-      });
-    } else {
-      updatedItem = await tx.inventoryItem.update({
-        where: { productId_branchId: { productId, branchId } },
-        data: { quantity: { increment: quantity } },
-      });
-    }
-
-    const movement = await tx.stockMovement.create({
-      data: {
-        inventoryItemId: updatedItem!.id,
-        type: StockMovementType.ADJUSTMENT,
-        quantity,
-        note,
-        userId,
-      },
-    });
-
-    return { inventoryItem: updatedItem!, movement };
+  // Upsert ensures the record exists before we touch it.
+  // Sequential ops (no interactive tx) — compatible with PgBouncer transaction mode.
+  const baseItem = await prisma.inventoryItem.upsert({
+    where: { productId_branchId: { productId, branchId } },
+    create: { productId, branchId, quantity: 0, lowStockThreshold: 10 },
+    update: {},
   });
+
+  let updatedItem;
+
+  if (quantity < 0) {
+    // updateMany with stock guard prevents negative inventory under concurrency.
+    const result = await prisma.inventoryItem.updateMany({
+      where: { productId, branchId, quantity: { gte: -quantity } },
+      data: { quantity: { increment: quantity } },
+    });
+    if (result.count === 0) {
+      throw new AppError('Insufficient stock for this adjustment', 400);
+    }
+    updatedItem = await prisma.inventoryItem.findUnique({
+      where: { productId_branchId: { productId, branchId } },
+    });
+  } else {
+    updatedItem = await prisma.inventoryItem.update({
+      where: { productId_branchId: { productId, branchId } },
+      data: { quantity: { increment: quantity } },
+    });
+  }
+
+  const movement = await prisma.stockMovement.create({
+    data: {
+      inventoryItemId: baseItem.id,
+      type: StockMovementType.ADJUSTMENT,
+      quantity,
+      note,
+      userId,
+    },
+  });
+
+  return { inventoryItem: updatedItem!, movement };
 }
 
 // ─── Stock transfer ───────────────────────────────────────────────────────────
@@ -161,50 +172,66 @@ export async function transferStock(params: {
     assertProductInStore(storeId, productId),
   ]);
 
-  return prisma.$transaction(async (tx) => {
-    // Deduct from source with concurrency-safe guard
-    const sourceUpdate = await tx.inventoryItem.updateMany({
+  // Pre-fetch source item to get its ID (updateMany doesn't return rows).
+  const sourceItem = await prisma.inventoryItem.findUnique({
+    where: { productId_branchId: { productId, branchId: fromBranchId } },
+  });
+  if (!sourceItem || sourceItem.quantity < quantity) {
+    throw new AppError('Insufficient stock in the source branch', 400);
+  }
+
+  // Deduct from source with concurrency-safe guard (array-form tx — one round-trip).
+  const [sourceResult] = await prisma.$transaction([
+    prisma.inventoryItem.updateMany({
       where: { productId, branchId: fromBranchId, quantity: { gte: quantity } },
       data: { quantity: { decrement: quantity } },
-    });
+    }),
+  ]);
 
-    if (sourceUpdate.count === 0) {
-      throw new AppError('Insufficient stock in the source branch', 400);
-    }
+  if (sourceResult.count === 0) {
+    // Another concurrent request consumed the stock between the pre-check and the decrement.
+    throw new AppError('Insufficient stock in the source branch', 400);
+  }
 
-    const sourceItem = await tx.inventoryItem.findUnique({
-      where: { productId_branchId: { productId, branchId: fromBranchId } },
-    });
-
-    // Add to destination (create record if it does not exist yet)
-    const destItem = await tx.inventoryItem.upsert({
+  // Add to destination (create record if it does not exist yet).
+  // Wrapped in try/catch to compensate the source decrement on failure.
+  let destItem;
+  try {
+    destItem = await prisma.inventoryItem.upsert({
       where: { productId_branchId: { productId, branchId: toBranchId } },
       create: { productId, branchId: toBranchId, quantity, lowStockThreshold: 10 },
       update: { quantity: { increment: quantity } },
     });
+  } catch (err) {
+    // Best-effort compensation: restore source stock.
+    await prisma.inventoryItem.updateMany({
+      where: { productId, branchId: fromBranchId },
+      data: { quantity: { increment: quantity } },
+    }).catch(() => {});
+    throw err;
+  }
 
-    // Movements: TRANSFER_OUT stores a negative delta, TRANSFER_IN positive
-    await tx.stockMovement.createMany({
-      data: [
-        {
-          inventoryItemId: sourceItem!.id,
-          type: StockMovementType.TRANSFER_OUT,
-          quantity: -quantity,
-          note: note ?? null,
-          userId,
-        },
-        {
-          inventoryItemId: destItem.id,
-          type: StockMovementType.TRANSFER_IN,
-          quantity,
-          note: note ?? null,
-          userId,
-        },
-      ],
-    });
+  // Create movement records (supplementary audit; best-effort).
+  await prisma.stockMovement.createMany({
+    data: [
+      {
+        inventoryItemId: sourceItem.id,
+        type: StockMovementType.TRANSFER_OUT,
+        quantity: -quantity,
+        note: note ?? null,
+        userId,
+      },
+      {
+        inventoryItemId: destItem.id,
+        type: StockMovementType.TRANSFER_IN,
+        quantity,
+        note: note ?? null,
+        userId,
+      },
+    ],
+  }).catch(() => {});
 
-    return { fromBranchId, toBranchId, productId, quantity };
-  });
+  return { fromBranchId, toBranchId, productId, quantity };
 }
 
 // ─── Movement history ─────────────────────────────────────────────────────────

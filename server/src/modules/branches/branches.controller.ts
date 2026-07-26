@@ -5,12 +5,21 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import type { CreateBranchInput, UpdateBranchInput } from './branches.schema';
 
 export const getBranches = asyncHandler(async (req: Request, res: Response) => {
-  const branches = await branchService.getBranches(req.storeId!);
+  const branches = await branchService.getBranches(
+    req.storeId!,
+    req.user!.role,
+    req.user!.branchId,
+  );
   sendSuccess(res, branches);
 });
 
 export const getBranch = asyncHandler(async (req: Request, res: Response) => {
-  const branch = await branchService.getBranch(req.storeId!, req.params.id);
+  const branch = await branchService.getBranch(
+    req.storeId!,
+    req.params.id,
+    req.user!.role,
+    req.user!.branchId,
+  );
   sendSuccess(res, branch);
 });
 

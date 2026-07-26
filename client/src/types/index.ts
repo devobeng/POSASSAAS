@@ -40,15 +40,26 @@ export type StockMovementType = 'PURCHASE' | 'SALE' | 'ADJUSTMENT' | 'TRANSFER_I
 
 export interface User {
   id: string;
-  email: string;
+  email: string | null;
+  phone: string | null;
   name: string;
   role: Role;
   isActive: boolean;
   storeId: string | null;
   branchId: string | null;
+  mustChangePassword?: boolean;
   createdAt: string;
   store?: { id: string; name: string; slug: string; currency: string } | null;
   branch?: { id: string; name: string } | null;
+}
+
+export interface SubscriptionPlan {
+  id: string;
+  name: string;
+  price: string;
+  maxBranches: number;
+  maxUsers: number;
+  features: Record<string, unknown>;
 }
 
 export interface Store {
@@ -57,8 +68,9 @@ export interface Store {
   slug: string;
   logoUrl: string | null;
   currency: string;
-  subscriptionPlan?: string | null;
+  subscriptionPlan?: SubscriptionPlan | null;
   subscriptionStatus: SubscriptionStatus;
+  trialEndsAt?: string | null;
   createdAt: string;
 }
 
@@ -75,6 +87,7 @@ export interface Category {
   id: string;
   storeId: string;
   name: string;
+  _count?: { products: number };
 }
 
 export interface Product {

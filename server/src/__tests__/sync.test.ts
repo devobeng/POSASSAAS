@@ -134,11 +134,17 @@ function mockOrderFixture(overrides: Record<string, unknown> = {}) {
 function setupOrderMocks(opts: { hasStock?: boolean; stockDiscrepancy?: boolean } = {}) {
   const { hasStock = true, stockDiscrepancy = false } = opts;
 
-  prisma.$transaction.mockImplementation((fn: (tx: typeof prisma) => unknown) => fn(prisma));
+  // Handle both array-form (new) and callback-form (legacy) transactions.
+  prisma.$transaction.mockImplementation((arg: unknown) => {
+    if (typeof arg === 'function') return (arg as (tx: typeof prisma) => unknown)(prisma);
+    return Promise.all(arg as Promise<unknown>[]);
+  });
   prisma.product.findMany.mockResolvedValue([mockProduct]);
   prisma.order.count.mockResolvedValue(0);
   prisma.branch.findUnique.mockResolvedValue({ name: 'Branch 1' });
-  prisma.inventoryItem.findMany.mockResolvedValue([{ id: 'inv-1', productId: PRODUCT_ID }]);
+  prisma.inventoryItem.findMany.mockResolvedValue([
+    { id: 'inv-1', productId: PRODUCT_ID, quantity: 100 },
+  ]);
   prisma.stockMovement.createMany.mockResolvedValue({ count: 1 });
 
   // Online path: updateMany with guard
@@ -305,25 +311,19 @@ describe('POST /api/v1/sync/orders', () => {
       .mockResolvedValueOnce(existingOrder)  // duplicateOrder: already exists
       .mockResolvedValueOnce(null);          // badOrder: not a duplicate, but payment will fail
 
-    // Only goodOrder will reach the transaction
-    prisma.$transaction.mockImplementationOnce((fn: (tx: typeof prisma) => unknown) => {
-      // goodOrder transaction succeeds
-      prisma.product.findMany.mockResolvedValue([mockProduct]);
-      prisma.inventoryItem.updateMany.mockResolvedValue({ count: 1 });
-      prisma.order.count.mockResolvedValue(0);
-      prisma.branch.findUnique.mockResolvedValue({ name: 'Branch 1' });
-      prisma.inventoryItem.findMany.mockResolvedValue([{ id: 'inv-1', productId: PRODUCT_ID }]);
-      prisma.stockMovement.createMany.mockResolvedValue({ count: 1 });
-      prisma.order.create.mockResolvedValue(mockOrderFixture({ clientOrderId: goodOrder.clientOrderId }));
-      return fn(prisma);
-    });
-
-    // badOrder: payment mismatch triggers AppError inside the transaction
-    prisma.$transaction.mockImplementationOnce((fn: (tx: typeof prisma) => unknown) => {
-      prisma.product.findMany.mockResolvedValue([mockProduct]);
-      prisma.order.count.mockResolvedValue(0);
-      return fn(prisma);
-    });
+    // In the new flow, reads happen BEFORE $transaction — set mocks up front.
+    // goodOrder uses these; badOrder fails at payment-validation before any DB calls.
+    prisma.product.findMany.mockResolvedValue([mockProduct]);
+    prisma.branch.findUnique.mockResolvedValue({ name: 'Branch 1' });
+    prisma.inventoryItem.findMany.mockResolvedValue([
+      { id: 'inv-1', productId: PRODUCT_ID, quantity: 100 },
+    ]);
+    prisma.inventoryItem.updateMany.mockResolvedValue({ count: 1 });
+    prisma.order.count.mockResolvedValue(0);
+    prisma.stockMovement.createMany.mockResolvedValue({ count: 1 });
+    prisma.order.create.mockResolvedValue(
+      mockOrderFixture({ clientOrderId: goodOrder.clientOrderId }),
+    );
 
     const res = await request(app)
       .post('/api/v1/sync/orders')

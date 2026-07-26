@@ -1,8 +1,19 @@
 import { Router } from 'express';
 import { validate } from '../../middleware/validate';
 import { authenticate, authorize } from '../../middleware/auth';
-import { authRateLimiter, loginRateLimiter } from '../../middleware/rateLimiter';
-import { loginSchema, registerStoreSchema } from './auth.schema';
+import {
+  authRateLimiter,
+  loginRateLimiter,
+  smsOtpRequestRateLimiter,
+  smsOtpVerifyRateLimiter,
+} from '../../middleware/rateLimiter';
+import {
+  loginSchema,
+  registerStoreSchema,
+  forgotPasswordRequestSchema,
+  forgotPasswordVerifySchema,
+  forgotPasswordResetSchema,
+} from './auth.schema';
 import * as authController from './auth.controller';
 
 export const authRouter = Router();
@@ -14,6 +25,25 @@ authRouter.post('/login', loginRateLimiter, validate(loginSchema), authControlle
 authRouter.post('/refresh', authController.refresh);
 authRouter.post('/logout', authenticate, authController.logout);
 authRouter.get('/me', authenticate, authController.me);
+
+// SMS (Hubtel OTP) password reset — self-service, unauthenticated
+authRouter.post(
+  '/forgot-password/sms',
+  smsOtpRequestRateLimiter,
+  validate(forgotPasswordRequestSchema),
+  authController.forgotPasswordRequest,
+);
+authRouter.post(
+  '/forgot-password/sms/verify',
+  smsOtpVerifyRateLimiter,
+  validate(forgotPasswordVerifySchema),
+  authController.forgotPasswordVerify,
+);
+authRouter.post(
+  '/forgot-password/sms/reset',
+  validate(forgotPasswordResetSchema),
+  authController.forgotPasswordReset,
+);
 
 // Protected test route used in integration tests to verify RBAC
 authRouter.get(

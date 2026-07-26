@@ -22,18 +22,16 @@ interface ProductListParams {
   isActive?: boolean;
 }
 
-interface ProductListData {
-  items: Product[];
-  meta: PaginationMeta;
-}
-
 export function useProducts(params: ProductListParams = {}) {
   return useQuery({
     queryKey: ['products', params],
     queryFn: () =>
       api
-        .get<ApiResponse<ProductListData>>('/products', { params })
-        .then((r) => r.data.data),
+        .get<ApiResponse<Product[]>>('/products', { params })
+        .then((r) => ({
+          items: r.data.data ?? [],
+          meta: r.data.meta as PaginationMeta | undefined,
+        })),
   });
 }
 
@@ -84,7 +82,7 @@ export function useUploadProductImage(id: string) {
       const formData = new FormData();
       formData.append('image', file);
       return api
-        .patch<ApiResponse<Product>>(`/products/${id}/image`, formData, {
+        .post<ApiResponse<Product>>(`/products/${id}/image`, formData, {
           headers: { 'Content-Type': 'multipart/form-data' },
         })
         .then((r) => r.data.data);

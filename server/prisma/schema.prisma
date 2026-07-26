@@ -66,11 +66,26 @@ enum RecurringInterval {
   MONTHLY
 }
 
+enum AdjustmentReason {
+  DAMAGED
+  EXPIRED
+  RECOUNT
+  THEFT_SUSPECTED
+  OTHER
+}
+
+enum StockAdjustmentRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 // ─── Models ───────────────────────────────────────────────────────────────────
 
 model User {
   id        String   @id @default(cuid())
-  email     String   @unique
+  email     String?  @unique
+  phone     String?  @unique
   password  String
   name      String
   role      Role
@@ -86,17 +101,41 @@ model User {
   lockedUntil         DateTime?
   mustChangePassword  Boolean   @default(false)
 
-  store               Store?          @relation(fields: [storeId], references: [id], onDelete: SetNull)
-  branch              Branch?         @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  orders              Order[]
-  stockMovements      StockMovement[]
-  auditLogs           AuditLog[]
-  expensesRecorded    Expense[]       @relation("ExpenseRecorder")
-  expensesApproved    Expense[]       @relation("ExpenseApprover")
+  store                 Store?                 @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  branch                Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  orders                Order[]
+  stockMovements        StockMovement[]
+  auditLogs             AuditLog[]
+  expensesRecorded      Expense[]              @relation("ExpenseRecorder")
+  expensesApproved      Expense[]              @relation("ExpenseApprover")
+  passwordResetRequests PasswordResetRequest[]
+  adjustmentsRequested  StockAdjustmentRequest[] @relation("AdjustmentRequester")
+  adjustmentsReviewed   StockAdjustmentRequest[] @relation("AdjustmentReviewer")
 
   @@index([storeId])
   @@index([branchId])
   @@map("users")
+}
+
+// SMS (Hubtel OTP) password reset flow. requestId is Hubtel's OTP session
+// id; prefix is the short code Hubtel returns alongside it for verification.
+// verified flips true after a successful Hubtel OTP verify call, and the
+// row is consumed exactly once when the new password is actually set.
+model PasswordResetRequest {
+  id         String   @id @default(cuid())
+  userId     String
+  phone      String
+  requestId  String   @unique
+  prefix     String?
+  verified   Boolean  @default(false)
+  consumed   Boolean  @default(false)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_requests")
 }
 
 model Store {
@@ -106,8 +145,13 @@ model Store {
   logoUrl              String?
   currency             String             @default("NGN")
   subscriptionStatus   SubscriptionStatus @default(TRIAL)
+  trialEndsAt          DateTime?
   paystackCustomerCode String?
   subscriptionPlanId   String?
+  // BRANCH_MANAGER adjustments with |quantity| over this go to STORE_ADMIN
+  // approval instead of applying immediately. STORE_ADMIN/SUPER_ADMIN
+  // adjustments always apply immediately regardless of this value.
+  stockAdjustmentThreshold Int      @default(20)
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 
@@ -121,6 +165,7 @@ model Store {
   receiptSettings    ReceiptSettings?
   expenseCategories  ExpenseCategory[]
   expenses           Expense[]
+  stockAdjustmentRequests StockAdjustmentRequest[]
 
   @@index([slug])
   @@map("stores")
@@ -159,6 +204,7 @@ model Branch {
   inventoryItems InventoryItem[]
   orders         Order[]
   expenses       Expense[]
+  stockAdjustmentRequests StockAdjustmentRequest[]
 
   @@unique([storeId, name])
   @@index([storeId])
@@ -200,6 +246,7 @@ model Product {
   category       Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   inventoryItems InventoryItem[]
   orderItems     OrderItem[]
+  stockAdjustmentRequests StockAdjustmentRequest[]
 
   @@unique([storeId, sku])
   @@index([storeId])
@@ -235,6 +282,7 @@ model StockMovement {
   type            StockMovementType
   quantity        Int
   note            String?
+  reason          AdjustmentReason? // set for ADJUSTMENT movements only
   userId          String
   createdAt       DateTime          @default(now())
 
@@ -246,6 +294,37 @@ model StockMovement {
   @@index([createdAt])
   @@index([inventoryItemId, createdAt])
   @@map("stock_movements")
+}
+
+// Created instead of an immediate StockMovement when a BRANCH_MANAGER's
+// adjustment exceeds Store.stockAdjustmentThreshold. Approving one performs
+// the same stock mutation adjustStock() would have done immediately, plus
+// creates the StockMovement at that point. Rejecting one never touches
+// inventory at all.
+model StockAdjustmentRequest {
+  id            String                       @id @default(cuid())
+  storeId       String
+  branchId      String
+  productId     String
+  quantity      Int
+  reason        AdjustmentReason
+  note          String
+  status        StockAdjustmentRequestStatus @default(PENDING)
+  requestedById String
+  reviewedById  String?
+  reviewNote    String?
+  createdAt     DateTime                     @default(now())
+  updatedAt     DateTime                     @updatedAt
+
+  store       Store   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  branch      Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  product     Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  requestedBy User    @relation("AdjustmentRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  reviewedBy  User?   @relation("AdjustmentReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([storeId, status])
+  @@index([branchId])
+  @@map("stock_adjustment_requests")
 }
 
 model Order {

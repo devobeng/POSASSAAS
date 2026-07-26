@@ -1,6 +1,8 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
+import { Lock } from 'lucide-react';
 import { useAuthStore } from '@/store/authStore';
 import {
   useSalesSummary, useSalesByProduct, useSalesByCategory,
@@ -36,6 +38,27 @@ function fmt(pesewas: string | number) {
   return (parseFloat(String(pesewas)) / 100).toFixed(2);
 }
 
+function isFeatureLocked(error: unknown): boolean {
+  const e = error as { response?: { data?: { errors?: string } } } | null;
+  return e?.response?.data?.errors === 'FEATURE_LOCKED';
+}
+
+function UpgradePrompt() {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 text-center">
+      <Lock className="w-8 h-8 mb-3 text-gray-300 dark:text-gray-700" />
+      <p className="text-sm font-medium text-gray-700 dark:text-gray-300">This report isn&apos;t on your current plan</p>
+      <p className="text-xs text-gray-400 mt-1 mb-4">Upgrade to unlock it.</p>
+      <Link
+        href="/select-plan"
+        className="px-4 py-2 text-sm bg-primary-600 hover:bg-primary-700 text-white rounded-lg font-medium"
+      >
+        View plans
+      </Link>
+    </div>
+  );
+}
+
 export default function ReportsPage() {
   const user = useAuthStore((s) => s.user);
   const { data: branches } = useBranches();
@@ -65,6 +88,18 @@ export default function ReportsPage() {
   const inventoryValuation = useInventoryValuation({ branchId: branchId || undefined }, { enabled: isManagerPlus });
   const profitReport = useProfit(params);
   const pnlReport = useProfitAndLoss({ startDate, endDate, branchId: branchId || undefined }, { enabled: isManagerPlus });
+
+  const activeQueryError: unknown = {
+    'sales-summary': salesSummary.error,
+    'by-product': byProduct.error,
+    'by-category': byCategory.error,
+    'by-cashier': byCashier.error,
+    'by-branch': byBranch.error,
+    'payment-methods': paymentMethods.error,
+    'inventory': inventoryValuation.error,
+    'profit': profitReport.error,
+    'pnl': pnlReport.error,
+  }[report];
 
   const availableReports = REPORT_OPTIONS.filter(
     (r) => !r.roles || r.roles.includes(user?.role ?? ''),
@@ -128,6 +163,10 @@ export default function ReportsPage() {
 
       {/* Report content */}
       <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl p-5 space-y-5">
+        {isFeatureLocked(activeQueryError) ? (
+        <UpgradePrompt />
+        ) : (
+        <>
         {report === 'sales-summary' && (
           <SalesSummaryReport data={salesSummary.data} isLoading={salesSummary.isLoading} />
         )}
@@ -160,12 +199,14 @@ export default function ReportsPage() {
             endDate={endDate}
           />
         )}
+        </>
+        )}
       </div>
     </div>
   );
 }
 
-// â"€â"€ Sub-reports â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ── Sub-reports ───────────────────────────────────────────────────────────────
 
 function LoadingState() {
   return (
@@ -384,7 +425,7 @@ function ProfitReport({ data, isLoading }: { data: unknown; isLoading: boolean }
   );
 }
 
-// â"€â"€ Profit & Loss Statement â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ── Profit & Loss Statement ────────────────────────────────────────────────────
 
 function PnlRow({
   label, value, indent, bold, separator, negative,

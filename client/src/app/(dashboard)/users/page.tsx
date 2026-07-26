@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useAuthStore } from '@/store/authStore';
-import { useUsers, useCreateUser, useUpdateUser, useDeleteUser } from '@/hooks/api/useUsers';
+import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, type CreateUserResult } from '@/hooks/api/useUsers';
 import { useBranches } from '@/hooks/api/useBranches';
 import { useUiStore } from '@/store/uiStore';
 import DataTable, { type Column } from '@/components/ui/DataTable';
@@ -24,11 +24,11 @@ const ROLE_BADGE: Record<Role, 'error' | 'warning' | 'info' | 'neutral'> = {
 };
 
 interface FormState {
-  name: string; email: string; password: string;
+  name: string; email: string; phone: string;
   role: Role; branchId: string; isActive: boolean;
 }
 
-const EMPTY: FormState = { name: '', email: '', password: '', role: 'CASHIER', branchId: '', isActive: true };
+const EMPTY: FormState = { name: '', email: '', phone: '', role: 'CASHIER', branchId: '', isActive: true };
 
 export default function UsersPage() {
   const user = useAuthStore((s) => s.user);
@@ -40,6 +40,7 @@ export default function UsersPage() {
   const [editUser, setEditUser] = useState<User | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [credentials, setCredentials] = useState<CreateUserResult | null>(null);
 
   const { data, isLoading } = useUsers({ page, limit: 20 });
   const { mutateAsync: createUser, isPending: isCreating } = useCreateUser();
@@ -55,26 +56,30 @@ export default function UsersPage() {
   );
 
   const openCreate = () => { setEditUser(null); setForm({ ...EMPTY, role: assignableRoles[0] ?? 'CASHIER', branchId: user?.branchId ?? '' }); setDrawerOpen(true); };
-  const openEdit = (u: User) => { setEditUser(u); setForm({ name: u.name, email: u.email, password: '', role: u.role, branchId: u.branchId ?? '', isActive: u.isActive }); setDrawerOpen(true); };
+  const openEdit = (u: User) => { setEditUser(u); setForm({ name: u.name, email: u.email ?? '', phone: u.phone ?? '', role: u.role, branchId: u.branchId ?? '', isActive: u.isActive }); setDrawerOpen(true); };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const payload = {
-        name: form.name,
-        email: form.email,
-        role: form.role,
-        branchId: form.branchId || undefined,
-        isActive: form.isActive,
-        ...(form.password && { password: form.password }),
-      };
       if (isEditing) {
-        await updateUser(payload);
+        await updateUser({
+          name: form.name,
+          branchId: form.branchId || undefined,
+          isActive: form.isActive,
+        });
+        toast('User updated', 'success');
+        setDrawerOpen(false);
       } else {
-        await createUser({ ...payload, password: form.password });
+        const result = await createUser({
+          name: form.name,
+          email: form.email || undefined,
+          phone: form.phone,
+          role: form.role,
+          branchId: form.branchId || undefined,
+        });
+        setDrawerOpen(false);
+        setCredentials(result);
       }
-      toast(isEditing ? 'User updated' : 'User created', 'success');
-      setDrawerOpen(false);
     } catch (err: unknown) {
       const e = err as { response?: { data?: { message?: string } } };
       toast(e.response?.data?.message ?? 'Failed to save user', 'error');
@@ -155,14 +160,21 @@ export default function UsersPage() {
             <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Full name <span className="text-red-500">*</span></label>
             <input required type="text" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Jane Doe" className={inputClass} />
           </div>
+          {!isEditing && (
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Phone <span className="text-red-500">*</span></label>
+              <input required type="tel" value={form.phone} onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} placeholder="0244123456" className={inputClass} />
+            </div>
+          )}
           <div>
-            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Email <span className="text-red-500">*</span></label>
-            <input required type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} placeholder="jane@example.com" className={inputClass} />
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Email {!isEditing && <span className="text-gray-400">(optional)</span>}</label>
+            <input disabled={isEditing} type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} placeholder="jane@example.com" className={inputClass} />
           </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Password {isEditing && <span className="text-gray-400">(leave blank to keep current)</span>} {!isEditing && <span className="text-red-500">*</span>}</label>
-            <input type="password" required={!isEditing} value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder={isEditing ? '••••••••' : 'Min 8 characters'} className={inputClass} />
-          </div>
+          {!isEditing && (
+            <p className="text-xs text-gray-400 dark:text-gray-500 -mt-1">
+              A temporary password is generated automatically — you&apos;ll see it once, right after creating the account.
+            </p>
+          )}
           <div>
             <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Role <span className="text-red-500">*</span></label>
             <select value={form.role} onChange={(e) => setForm((f) => ({ ...f, role: e.target.value as Role }))} className={inputClass}>
@@ -203,6 +215,34 @@ export default function UsersPage() {
           })
         }
       />
+
+      {credentials && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-6">
+            <h3 className="font-semibold text-gray-900 dark:text-gray-100 mb-2">User created</h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+              Share this temporary password with <strong>{credentials.user.name}</strong>. It won&apos;t be shown again — they&apos;ll be asked to set their own on first login.
+            </p>
+            <div className="flex items-center gap-2 mb-6">
+              <code className="flex-1 px-3 py-2 text-sm font-mono bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-gray-900 dark:text-gray-100 select-all">
+                {credentials.tempPassword}
+              </code>
+              <button
+                onClick={() => { navigator.clipboard.writeText(credentials.tempPassword); toast('Copied to clipboard', 'success'); }}
+                className="px-3 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                Copy
+              </button>
+            </div>
+            <button
+              onClick={() => setCredentials(null)}
+              className="w-full py-2 text-sm bg-primary-600 hover:bg-primary-700 text-white rounded-lg font-medium"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

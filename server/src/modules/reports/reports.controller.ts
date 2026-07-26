@@ -4,6 +4,7 @@ import { sendSuccess } from '../../utils/response';
 import { sendCSV } from '../../utils/csv';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { AppError } from '../../middleware/error';
+import { resolveStoreIdForRequest } from '../../middleware/tenant';
 import {
   baseDateRangeSchema,
   salesSummarySchema,
@@ -14,8 +15,8 @@ import {
 // ─── Scope helpers ────────────────────────────────────────────────────────────
 
 function getScope(req: Request) {
-  const { sub: userId, role, storeId: userStoreId, branchId: userBranchId } = req.user!;
-  const storeId = req.storeId ?? userStoreId;
+  const { sub: userId, role, branchId: userBranchId } = req.user!;
+  const storeId = resolveStoreIdForRequest(req);
   const branchId = role === 'BRANCH_MANAGER' || role === 'CASHIER' ? userBranchId : undefined;
   return { userId, role, storeId, branchId };
 }

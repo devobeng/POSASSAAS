@@ -19,7 +19,7 @@ import {
 import { useBranches } from '@/hooks/api/useBranches';
 import type { Expense, ExpenseStatus } from '@/types';
 
-// â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const STATUS_BADGE: Record<ExpenseStatus, { label: string; variant: 'success' | 'warning' | 'error' | 'neutral' }> = {
   APPROVED: { label: 'Approved', variant: 'success' },
@@ -37,7 +37,7 @@ function fmt(date: string) {
   return new Date(date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-// â”€â”€â”€ Expense Drawer (create / edit) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Expense Drawer (create / edit) ──────────────────────────────────────────
 
 interface DrawerForm {
   categoryId: string;
@@ -73,7 +73,7 @@ function fromExpense(e: Expense): DrawerForm {
 
 interface RejectModalState { open: boolean; expenseId: string; note: string }
 
-// â”€â”€â”€ Page â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ExpensesPage() {
   const user  = useAuthStore((s) => s.user);
@@ -82,7 +82,7 @@ export default function ExpensesPage() {
   const isAdmin   = user?.role === 'STORE_ADMIN' || user?.role === 'SUPER_ADMIN';
   const isManager = user?.role === 'BRANCH_MANAGER';
 
-  // â”€â”€ Filters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Filters ────────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab]     = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('ALL');
   const [page, setPage]               = useState(1);
   const [filterCategory, setFilterCat] = useState('');
@@ -104,7 +104,7 @@ export default function ExpensesPage() {
   const { data: categories = [] } = useExpenseCategories();
   const { data: branches = [] }   = useBranches();
 
-  // â”€â”€ Mutations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Mutations ──────────────────────────────────────────────────────────────
   const { mutateAsync: createExpense, isPending: creating }  = useCreateExpense();
   const { mutateAsync: updateExpense, isPending: updating }  = useUpdateExpense();
   const { mutateAsync: deleteExpense }                       = useDeleteExpense();
@@ -112,7 +112,7 @@ export default function ExpensesPage() {
   const { mutateAsync: rejectExpense }                       = useRejectExpense();
   const { mutateAsync: uploadReceipt }                       = useUploadExpenseReceipt();
 
-  // â”€â”€ Drawer state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Drawer state ───────────────────────────────────────────────────────────
   const [drawerOpen, setDrawerOpen]   = useState(false);
   const [editing, setEditing]         = useState<Expense | null>(null);
   const [form, setForm]               = useState<DrawerForm>(emptyForm());
@@ -151,7 +151,7 @@ export default function ExpensesPage() {
     }
   };
 
-  // â”€â”€ Reject modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Reject modal ───────────────────────────────────────────────────────────
   const [reject, setReject] = useState<RejectModalState>({ open: false, expenseId: '', note: '' });
 
   const handleApprove = async (id: string) => {
@@ -175,25 +175,53 @@ export default function ExpensesPage() {
     catch { toast('Cannot delete', 'error'); }
   };
 
-  // â”€â”€ Receipt upload â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Receipt upload ─────────────────────────────────────────────────────────
   const handleReceiptFile = async (expenseId: string, file: File) => {
     try { await uploadReceipt({ id: expenseId, file }); toast('Receipt uploaded', 'success'); }
     catch { toast('Upload failed', 'error'); }
   };
 
-  // â”€â”€ Columns â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Columns ────────────────────────────────────────────────────────────────
   const inputCls = 'px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500';
 
   const columns: Column<Expense>[] = [
-    { key: 'date',     header: 'Date',     render: (e) => <span className="text-sm">{fmt(e.expenseDate)}</span> },
-    { key: 'category', header: 'Category', render: (e) => <span className="text-sm font-medium">{e.category.name}</span> },
-    { key: 'desc',     header: 'Description', render: (e) => <span className="text-sm text-gray-600 dark:text-gray-400 truncate max-w-xs block">{e.description}</span> },
-    { key: 'branch',   header: 'Branch',   render: (e) => <span className=”text-sm”>{e.branch?.name ?? '—'}</span> },
-    { key: 'amount',   header: 'Amount',   render: (e) => <span className="text-sm font-semibold tabular-nums">{formatAmount(e.amount)}</span> },
-    { key: 'status',   header: 'Status',   render: (e) => {
-      const s = STATUS_BADGE[e.status];
-      return <Badge variant={s.variant} label={s.label} />;
-    }},
+    {
+      key: 'date', header: 'Date',
+      render: (e) => (
+        <span className="text-sm">{fmt(e.expenseDate)}</span>
+      ),
+    },
+    {
+      key: 'category', header: 'Category',
+      render: (e) => (
+        <span className="text-sm font-medium">{e.category.name}</span>
+      ),
+    },
+    {
+      key: 'desc', header: 'Description',
+      render: (e) => (
+        <span className="text-sm text-gray-600 dark:text-gray-400 truncate max-w-xs block">{e.description}</span>
+      ),
+    },
+    {
+      key: 'branch', header: 'Branch',
+      render: (e) => (
+        <span className="text-sm">{e.branch ? e.branch.name : '—'}</span>
+      ),
+    },
+    {
+      key: 'amount', header: 'Amount',
+      render: (e) => (
+        <span className="text-sm font-semibold tabular-nums">{formatAmount(e.amount)}</span>
+      ),
+    },
+    {
+      key: 'status', header: 'Status',
+      render: (e) => {
+        const s = STATUS_BADGE[e.status];
+        return <Badge variant={s.variant} label={s.label} />;
+      },
+    },
     { key: 'actions',  header: '', render: (e) => (
       <div className="flex items-center gap-1 justify-end">
         {isAdmin && e.status === 'PENDING' && (
@@ -347,7 +375,7 @@ export default function ExpensesPage() {
           <div>
             <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1.5">Amount *</label>
             <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-400">â‚¦</span>
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-400">₦</span>
               <input type="number" required min="0.01" step="0.01" placeholder="0.00"
                 value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
                 className={`w-full pl-7 ${inputCls}`} />

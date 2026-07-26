@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { Package } from 'lucide-react';
 import { useProducts, useDeleteProduct, useImportProductsCSV } from '@/hooks/api/useProducts';
 import { useCategories } from '@/hooks/api/useCategories';
 import { useUiStore } from '@/store/uiStore';
@@ -35,7 +36,9 @@ export default function ProductsPage() {
         p.imageUrl ? (
           <Image src={p.imageUrl} alt={p.name} width={36} height={36} className="w-9 h-9 rounded-lg object-cover" />
         ) : (
-          <div className="w-9 h-9 rounded-lg bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-lg">📦</div>
+          <div className="w-9 h-9 rounded-lg bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+            <Package className="w-4 h-4 text-gray-400" />
+          </div>
         ),
     },
     {

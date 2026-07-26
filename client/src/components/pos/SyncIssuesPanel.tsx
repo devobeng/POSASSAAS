@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback } from 'react';
+import { X, CheckCircle2 } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, type FailedOrder } from '@/lib/db';
 import { useConnectivityStore } from '@/store/connectivityStore';
@@ -124,7 +125,7 @@ export default function SyncIssuesPanel({ onClose }: Props) {
               onClick={onClose}
               className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
             >
-              ✕
+              <X className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -133,7 +134,7 @@ export default function SyncIssuesPanel({ onClose }: Props) {
         <div className="overflow-y-auto flex-1">
           {!failedOrders || failedOrders.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
-              <span className="text-4xl mb-3">✅</span>
+              <CheckCircle2 className="w-10 h-10 mb-3 text-green-500" />
               <p className="text-sm text-gray-500 dark:text-gray-400">No failed orders</p>
             </div>
           ) : (
@@ -175,7 +176,7 @@ export default function SyncIssuesPanel({ onClose }: Props) {
                           title="Dismiss (order will not be synced)"
                           className="text-xs px-2 py-1 rounded border border-red-200 dark:border-red-800 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
                         >
-                          ✕
+                          <X className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     </div>

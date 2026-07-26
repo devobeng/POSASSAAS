@@ -14,10 +14,11 @@ export function useInventory(params: InventoryParams) {
     queryKey: ['inventory', params],
     queryFn: () =>
       api
-        .get<ApiResponse<{ items: InventoryItem[]; meta: PaginationMeta }>>('/inventory', {
-          params,
-        })
-        .then((r) => r.data.data),
+        .get<ApiResponse<InventoryItem[]>>('/inventory', { params })
+        .then((r) => ({
+          items: r.data.data ?? [],
+          meta: r.data.meta as PaginationMeta | undefined,
+        })),
     enabled: !!params.branchId,
   });
 }
@@ -66,6 +67,16 @@ export function useTransferStock() {
   });
 }
 
+export interface StockMovement {
+  id: string;
+  type: string;
+  quantity: number;
+  note: string | null;
+  createdAt: string;
+  inventoryItem?: { product?: { name: string } | null };
+  user?: { name: string } | null;
+}
+
 export function useStockMovements(params: {
   branchId?: string;
   productId?: string;
@@ -76,7 +87,10 @@ export function useStockMovements(params: {
     queryKey: ['inventory', 'movements', params],
     queryFn: () =>
       api
-        .get<ApiResponse<unknown>>('/inventory/movements', { params })
-        .then((r) => r.data.data),
+        .get<ApiResponse<StockMovement[]>>('/inventory/movements', { params })
+        .then((r) => ({
+          items: r.data.data ?? [],
+          meta: r.data.meta as PaginationMeta | undefined,
+        })),
   });
 }

@@ -1,9 +1,17 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
+import { Store as StoreIcon } from 'lucide-react';
 import { useStore, useUpdateStore, useUploadLogo } from '@/hooks/api/useStore';
 import { useUiStore } from '@/store/uiStore';
 import Image from 'next/image';
+
+function trialDaysLeft(trialEndsAt: string | null | undefined): number | null {
+  if (!trialEndsAt) return null;
+  const ms = new Date(trialEndsAt).getTime() - Date.now();
+  return Math.max(0, Math.ceil(ms / (24 * 60 * 60 * 1000)));
+}
 
 export default function SettingsPage() {
   const toast = useUiStore((s) => s.toast);
@@ -62,7 +70,7 @@ export default function SettingsPage() {
                 {logoPreview ? (
                   <Image src={logoPreview} alt="Logo" width={80} height={80} className="w-full h-full object-cover" />
                 ) : (
-                  <span className="text-3xl">🏪</span>
+                  <StoreIcon className="w-8 h-8 text-gray-400" />
                 )}
               </div>
               <div className="space-y-1">
@@ -100,14 +108,30 @@ export default function SettingsPage() {
               <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 space-y-2 text-sm">
                 <div className="flex justify-between">
                   <span className="text-gray-500">Plan</span>
-                  <span className="font-medium capitalize">{store.subscriptionPlan?.toLowerCase() ?? 'Free'}</span>
+                  <span className="font-medium">{store.subscriptionPlan?.name ?? 'Free'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-500">Status</span>
-                  <span className={`font-medium ${store.subscriptionStatus === 'ACTIVE' ? 'text-green-600' : 'text-yellow-600'}`}>
-                    {store.subscriptionStatus ?? 'ACTIVE'}
+                  <span className={`font-medium ${
+                    store.subscriptionStatus === 'ACTIVE' ? 'text-green-600'
+                    : store.subscriptionStatus === 'EXPIRED' || store.subscriptionStatus === 'CANCELLED' ? 'text-red-600'
+                    : 'text-yellow-600'
+                  }`}>
+                    {store.subscriptionStatus}
                   </span>
                 </div>
+                {store.subscriptionStatus === 'TRIAL' && trialDaysLeft(store.trialEndsAt) !== null && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Trial</span>
+                    <span className="font-medium">{trialDaysLeft(store.trialEndsAt)} day(s) left</span>
+                  </div>
+                )}
+                <Link
+                  href="/select-plan"
+                  className="inline-block mt-1 text-sm text-primary-600 dark:text-primary-400 hover:underline"
+                >
+                  {store.subscriptionStatus === 'EXPIRED' ? 'Choose a plan →' : 'Change plan →'}
+                </Link>
               </div>
             </div>
           )}

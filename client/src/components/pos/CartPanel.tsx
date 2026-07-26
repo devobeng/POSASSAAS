@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { ShoppingCart, X } from 'lucide-react';
 import { useCartStore } from '@/store/cartStore';
 import { useConnectivityStore } from '@/store/connectivityStore';
 
@@ -67,7 +68,7 @@ export default function CartPanel({ onCharge }: Props) {
       <div className="flex-1 overflow-y-auto">
         {items.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-6 gap-2">
-            <span className="text-4xl">🛒</span>
+            <ShoppingCart className="w-10 h-10 text-gray-300 dark:text-gray-700" />
             <p className="text-sm text-gray-400 dark:text-gray-500">Cart is empty</p>
             <p className="text-xs text-gray-300 dark:text-gray-700">Tap a product to add it</p>
           </div>
@@ -109,10 +110,10 @@ export default function CartPanel({ onCharge }: Props) {
                     </button>
                     <button
                       onClick={() => removeItem(item.productId)}
-                      className="ml-1 w-5 h-5 flex items-center justify-center text-red-400 hover:text-red-600 dark:text-red-500 text-xs"
+                      className="ml-1 w-5 h-5 flex items-center justify-center text-red-400 hover:text-red-600 dark:text-red-500"
                       aria-label="Remove"
                     >
-                      ✕
+                      <X className="w-3 h-3" />
                     </button>
                   </div>
                 </div>

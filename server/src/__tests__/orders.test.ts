@@ -19,6 +19,7 @@ jest.mock('../config/database', () => ({
       create: jest.fn(),
       findMany: jest.fn(),
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       update: jest.fn(),
       count: jest.fn(),
     },
@@ -43,6 +44,7 @@ const { prisma } = require('../config/database') as {
       create: jest.Mock;
       findMany: jest.Mock;
       findUnique: jest.Mock;
+      findFirst: jest.Mock;
       update: jest.Mock;
       count: jest.Mock;
     };
@@ -146,7 +148,16 @@ describe('POST /api/v1/orders', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    prisma.$transaction.mockImplementation((fn: (tx: typeof prisma) => unknown) => fn(prisma));
+    // Handle both array-form (new) and callback-form (legacy) transactions.
+    prisma.$transaction.mockImplementation((arg: unknown) => {
+      if (typeof arg === 'function') return (arg as (tx: typeof prisma) => unknown)(prisma);
+      return Promise.all(arg as Promise<unknown>[]);
+    });
+    // Default inventory state: 100 units in stock; ID available for movements.
+    prisma.inventoryItem.findMany.mockResolvedValue([
+      { id: 'inv-1', productId: PRODUCT_ID, quantity: 100 },
+    ]);
+    prisma.order.findFirst.mockResolvedValue(null);
   });
 
   it('creates an order successfully → 201', async () => {
@@ -155,9 +166,6 @@ describe('POST /api/v1/orders', () => {
     prisma.order.count.mockResolvedValue(0);
     prisma.branch.findUnique.mockResolvedValue({ name: 'Branch 1' });
     prisma.order.create.mockResolvedValue(mockOrder);
-    prisma.inventoryItem.findMany.mockResolvedValue([
-      { id: 'inv-1', productId: PRODUCT_ID },
-    ]);
     prisma.stockMovement.createMany.mockResolvedValue({ count: 1 });
 
     const res = await request(app)
@@ -380,7 +388,10 @@ describe('GET /api/v1/orders/:id', () => {
 describe('POST /api/v1/orders/:id/refund', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    prisma.$transaction.mockImplementation((fn: (tx: typeof prisma) => unknown) => fn(prisma));
+    prisma.$transaction.mockImplementation((arg: unknown) => {
+      if (typeof arg === 'function') return (arg as (tx: typeof prisma) => unknown)(prisma);
+      return Promise.all(arg as Promise<unknown>[]);
+    });
   });
 
   it('refunds a completed order and restores stock → 200', async () => {

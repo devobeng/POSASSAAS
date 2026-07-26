@@ -15,24 +15,32 @@ export function useUsers(params: UserListParams = {}) {
     queryKey: ['users', params],
     queryFn: () =>
       api
-        .get<ApiResponse<{ items: User[]; meta: PaginationMeta }>>('/users', { params })
-        .then((r) => r.data.data),
+        .get<ApiResponse<User[]>>('/users', { params })
+        .then((r) => ({
+          items: r.data.data ?? [],
+          meta: r.data.meta as PaginationMeta | undefined,
+        })),
   });
 }
 
 export interface CreateUserPayload {
   name: string;
-  email: string;
-  password: string;
+  phone: string;
+  email?: string;
   role: Role;
   branchId?: string;
+}
+
+export interface CreateUserResult {
+  user: User;
+  tempPassword: string;
 }
 
 export function useCreateUser() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: CreateUserPayload) =>
-      api.post<ApiResponse<User>>('/users', data).then((r) => r.data.data),
+      api.post<ApiResponse<CreateUserResult>>('/users', data).then((r) => r.data.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
   });
 }
@@ -58,5 +66,17 @@ export function useDeleteUser(id: string) {
   return useMutation({
     mutationFn: () => api.delete(`/users/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+}
+
+export interface ChangePasswordPayload {
+  currentPassword: string;
+  newPassword: string;
+}
+
+export function useChangePassword() {
+  return useMutation({
+    mutationFn: (data: ChangePasswordPayload) =>
+      api.patch<ApiResponse<null>>('/users/me/password', data).then((r) => r.data),
   });
 }

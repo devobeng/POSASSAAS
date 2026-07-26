@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo, type RefObject, type KeyboardEvent } from 'react';
+import { Search } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useCartStore } from '@/store/cartStore';
 import { db, type CachedProduct } from '@/lib/db';
@@ -96,19 +97,7 @@ export default function ProductGrid({ searchRef }: Props) {
       {/* Search bar */}
       <div className="px-3 py-2.5 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shrink-0">
         <div className="relative">
-          <svg
-            className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-            />
-          </svg>
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
             ref={searchRef}
             type="search"
@@ -161,7 +150,7 @@ export default function ProductGrid({ searchRef }: Props) {
           </div>
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-48 text-center">
-            <span className="text-3xl mb-2">🔍</span>
+            <Search className="w-8 h-8 mb-2 text-gray-300 dark:text-gray-700" />
             <p className="text-sm text-gray-400">
               {(allProducts?.length ?? 0) === 0
                 ? 'Catalog loading… go online to sync products'

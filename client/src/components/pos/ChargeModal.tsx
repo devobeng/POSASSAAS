@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { X, CreditCard, Smartphone, Globe } from 'lucide-react';
 import { useCartStore } from '@/store/cartStore';
 import { useCreateOrder } from '@/hooks/api/useOrders';
 import { useUiStore } from '@/store/uiStore';
@@ -288,7 +289,7 @@ export default function ChargeModal({ open, onClose, onSuccess }: Props) {
               onClick={onClose}
               className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-600 dark:hover:text-gray-300"
             >
-              ✕
+              <X className="w-4 h-4" />
             </button>
           )}
         </div>
@@ -367,7 +368,9 @@ export default function ChargeModal({ open, onClose, onSuccess }: Props) {
               {/* CARD / MOBILE_MONEY */}
               {(method === 'CARD' || method === 'MOBILE_MONEY') && (
                 <div className="text-center py-4 space-y-2">
-                  <p className="text-4xl">{method === 'CARD' ? '💳' : '📱'}</p>
+                  {method === 'CARD'
+                    ? <CreditCard className="w-10 h-10 mx-auto text-gray-400" />
+                    : <Smartphone className="w-10 h-10 mx-auto text-gray-400" />}
                   <p className="text-sm text-gray-500 dark:text-gray-400">
                     {method === 'CARD'
                       ? 'Process on card terminal, then confirm'
@@ -382,7 +385,7 @@ export default function ChargeModal({ open, onClose, onSuccess }: Props) {
               {/* PAYSTACK */}
               {method === 'PAYSTACK' && (
                 <div className="text-center py-4 space-y-2">
-                  <p className="text-4xl">🌐</p>
+                  <Globe className="w-10 h-10 mx-auto text-gray-400" />
                   <p className="text-sm text-gray-500 dark:text-gray-400">
                     Opens Paystack checkout in a new tab; this screen polls for completion
                   </p>

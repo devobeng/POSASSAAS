@@ -12,7 +12,8 @@ import Drawer from '@/components/ui/Drawer';
 
 interface StoreRow {
   id: string; name: string; slug: string;
-  subscriptionPlan: string; subscriptionStatus: string;
+  subscriptionPlan: { name: string; price: string } | null;
+  subscriptionStatus: string;
   _count?: { users?: number; branches?: number };
 }
 
@@ -44,7 +45,7 @@ export default function AdminPage() {
 
   const storeColumns: Column<StoreRow>[] = [
     { key: 'name', header: 'Store', render: (s) => <div><p className="font-medium">{s.name}</p><p className="text-xs text-gray-400">{s.slug}</p></div> },
-    { key: 'plan', header: 'Plan', render: (s) => <span className="text-sm capitalize">{s.subscriptionPlan?.toLowerCase()}</span> },
+    { key: 'plan', header: 'Plan', render: (s) => <span className="text-sm capitalize">{s.subscriptionPlan?.name.toLowerCase() ?? 'free'}</span> },
     { key: 'status', header: 'Status', render: (s) => <Badge label={s.subscriptionStatus} variant={s.subscriptionStatus === 'ACTIVE' ? 'success' : s.subscriptionStatus === 'PAST_DUE' ? 'warning' : 'neutral'} /> },
     { key: 'users', header: 'Users', render: (s) => <span className="text-sm">{s._count?.users ?? 0}</span> },
     { key: 'branches', header: 'Branches', render: (s) => <span className="text-sm">{s._count?.branches ?? 0}</span> },

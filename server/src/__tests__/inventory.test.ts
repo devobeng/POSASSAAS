@@ -37,6 +37,7 @@ jest.mock('../config/database', () => ({
     branch: {
       findFirst: jest.fn(),
     },
+    store: { findUnique: jest.fn() },
     auditLog: { create: jest.fn() },
     $transaction: jest.fn(),
     $queryRaw: jest.fn(),
@@ -77,6 +78,7 @@ const { prisma } = require('../config/database') as {
       createMany: jest.Mock;
     };
     branch: { findFirst: jest.Mock };
+    store: { findUnique: jest.Mock };
     auditLog: { create: jest.Mock };
     $transaction: jest.Mock;
     $queryRaw: jest.Mock;
@@ -321,8 +323,8 @@ describe('GET /api/v1/inventory', () => {
 
   it('BRANCH_MANAGER always uses their own branchId from token', async () => {
     prisma.branch.findFirst.mockResolvedValue({ id: BRANCH_ID });
-    prisma.inventoryItem.findMany.mockResolvedValue([]);
-    prisma.inventoryItem.count.mockResolvedValue(0);
+    prisma.product.findMany.mockResolvedValue([]);
+    prisma.product.count.mockResolvedValue(0);
 
     const res = await request(app)
       .get('/api/v1/inventory')
@@ -337,17 +339,14 @@ describe('GET /api/v1/inventory', () => {
 
   it('STORE_ADMIN can query a specific branch → 200', async () => {
     prisma.branch.findFirst.mockResolvedValue({ id: BRANCH_ID });
-    prisma.inventoryItem.findMany.mockResolvedValue([
+    prisma.product.findMany.mockResolvedValue([
       {
-        id: 'inv-1',
-        productId: PRODUCT_ID,
-        branchId: BRANCH_ID,
-        quantity: 5,
-        lowStockThreshold: 10,
-        product: { id: PRODUCT_ID, name: 'Widget', sku: 'W001', barcode: null, imageUrl: null, sellingPrice: 999, costPrice: 500, taxRate: 0, category: null },
+        id: PRODUCT_ID, name: 'Widget', sku: 'W001', barcode: null, imageUrl: null,
+        sellingPrice: 999, costPrice: 500, taxRate: 0, category: null,
+        inventoryItems: [{ id: 'inv-1', quantity: 5, lowStockThreshold: 10, updatedAt: new Date() }],
       },
     ]);
-    prisma.inventoryItem.count.mockResolvedValue(1);
+    prisma.product.count.mockResolvedValue(1);
 
     const res = await request(app)
       .get(`/api/v1/inventory?branchId=${BRANCH_ID}`)
@@ -357,6 +356,27 @@ describe('GET /api/v1/inventory', () => {
     expect(res.body.data[0].isLowStock).toBe(true); // quantity(5) <= threshold(10)
     expect(res.body.data[0].quantity).toBe(5);
   });
+
+  it('a product never stocked at this branch still appears, with quantity 0', async () => {
+    prisma.branch.findFirst.mockResolvedValue({ id: BRANCH_ID });
+    prisma.product.findMany.mockResolvedValue([
+      {
+        id: PRODUCT_ID, name: 'Brand New Widget', sku: 'W002', barcode: null, imageUrl: null,
+        sellingPrice: 999, costPrice: 500, taxRate: 0, category: null,
+        inventoryItems: [], // no InventoryItem row yet for this branch
+      },
+    ]);
+    prisma.product.count.mockResolvedValue(1);
+
+    const res = await request(app)
+      .get(`/api/v1/inventory?branchId=${BRANCH_ID}`)
+      .set('Authorization', `Bearer ${adminToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data[0].productId).toBe(PRODUCT_ID);
+    expect(res.body.data[0].quantity).toBe(0);
+    expect(res.body.data[0].isLowStock).toBe(true);
+  });
 });
 
 // ─── STOCK ADJUSTMENT ─────────────────────────────────────────────────────────
@@ -364,10 +384,11 @@ describe('GET /api/v1/inventory', () => {
 describe('POST /api/v1/inventory/adjust', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    // Make $transaction pass through the callback synchronously
-    prisma.$transaction.mockImplementation((fn: (tx: typeof prisma) => Promise<unknown>) =>
-      fn(prisma),
-    );
+    // Handle both array-form (new) and callback-form (legacy) transactions.
+    prisma.$transaction.mockImplementation((arg: unknown) => {
+      if (typeof arg === 'function') return (arg as (tx: typeof prisma) => unknown)(prisma);
+      return Promise.all(arg as Promise<unknown>[]);
+    });
   });
 
   it('STORE_ADMIN can add stock → 200', async () => {
@@ -548,9 +569,36 @@ describe('Concurrent stock deductions — stock guard prevents negative inventor
 describe('POST /api/v1/inventory/transfer', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    prisma.$transaction.mockImplementation((fn: (tx: typeof prisma) => Promise<unknown>) =>
-      fn(prisma),
-    );
+    prisma.$transaction.mockImplementation((arg: unknown) => {
+      if (typeof arg === 'function') return (arg as (tx: typeof prisma) => unknown)(prisma);
+      return Promise.all(arg as Promise<unknown>[]);
+    });
+    // requireFeature('multiBranch') runs ahead of the handler — default to a
+    // plan that has it; the dedicated gating test below overrides this.
+    prisma.store.findUnique.mockResolvedValue({
+      subscriptionPlan: { features: { multiBranch: true } },
+    });
+  });
+
+  it('returns 402 when the plan lacks the "multiBranch" feature', async () => {
+    prisma.store.findUnique.mockResolvedValue({
+      subscriptionPlan: { features: { multiBranch: false } },
+    });
+
+    const res = await request(app)
+      .post('/api/v1/inventory/transfer')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({
+        productId: PRODUCT_ID,
+        fromBranchId: BRANCH_ID,
+        toBranchId: BRANCH_ID_2,
+        quantity: 10,
+        note: 'Branch restock',
+      });
+
+    expect(res.status).toBe(402);
+    expect(res.body.errors).toBe('FEATURE_LOCKED');
+    expect(prisma.branch.findFirst).not.toHaveBeenCalled();
   });
 
   it('STORE_ADMIN can transfer stock between branches → 200', async () => {

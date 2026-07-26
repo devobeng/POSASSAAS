@@ -27,6 +27,7 @@ jest.mock('../config/database', () => ({
     $queryRaw: jest.fn(),
     $connect: jest.fn(),
     $disconnect: jest.fn(),
+    store: { findUnique: jest.fn() },
   },
 }));
 
@@ -43,6 +44,7 @@ const { prisma } = require('../config/database') as {
     };
     auditLog: { create: jest.Mock };
     $queryRaw: jest.Mock;
+    store: { findUnique: jest.Mock };
   };
 };
 
@@ -86,7 +88,14 @@ const PENDING_EXPENSE = {
 
 const APPROVED_EXPENSE = { ...PENDING_EXPENSE, id: 'exp-2', status: 'APPROVED', recordedById: 'manager-2', approvedById: 'user-1' };
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  // requireFeature('analytics') runs ahead of /reports/profit-and-loss — default
+  // to a fully-featured plan since these tests exercise P&L math, not gating.
+  prisma.store.findUnique.mockResolvedValue({
+    subscriptionPlan: { features: { reports: true, analytics: true } },
+  });
+});
 
 // ── Test 1: Branch manager cannot approve their own expense ───────────────────
 
@@ -248,8 +257,9 @@ describe('materializeRecurringExpenses()', () => {
 
     await materializeRecurringExpenses();
 
-    // 6 weeks overdue = 6 PENDING records
-    expect(prisma.expense.create).toHaveBeenCalledTimes(6);
+    // nextDueDate is exactly 42 days (6×7) before today, so the loop fires at
+    // today-42, -35, -28, -21, -14, -7, and 0 (today itself) = 7 records.
+    expect(prisma.expense.create).toHaveBeenCalledTimes(7);
   });
 });
 

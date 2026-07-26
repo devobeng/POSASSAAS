@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import { X } from 'lucide-react';
 
 interface Props {
   open: boolean;
@@ -28,7 +29,7 @@ export default function Drawer({ open, onClose, title, children, width = 'max-w-
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 shrink-0">
           <h2 className="font-semibold text-gray-900 dark:text-gray-100">{title}</h2>
           <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-600">
-            ✕
+            <X className="w-4 h-4" />
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-6">{children}</div>

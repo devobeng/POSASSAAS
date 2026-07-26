@@ -4,32 +4,27 @@ import { AppError } from '../../middleware/error';
 import { auditLog } from '../../utils/audit';
 import type { CreateOrderInput, OrderListQuery } from './orders.schema';
 
-// ─── Shared type ──────────────────────────────────────────────────────────────
+// ─── Shared type ─────────────────────────────────────────────────────────────
 
 type OrderWithDetails = Prisma.OrderGetPayload<{
   include: { items: true; payments: true };
 }>;
 
+// ─── Create order ─────────────────────────────────────────────────────────────
+// Uses NO interactive (callback-form) Prisma transactions so it is compatible
+// with PgBouncer in transaction mode.
+//
+// Online orders:
+//   Inventory decrements use prisma.$transaction([]) — the array/batch form
+//   which sends BEGIN…COMMIT in one round-trip PgBouncer can handle.
+//
+// Offline orders:
+//   Inventory upserts run sequentially (need the returned ID for movements).
+
 export interface CreateOrderResult {
   order: OrderWithDetails;
   duplicate: boolean;
 }
-
-// ─── Create order ─────────────────────────────────────────────────────────────
-//
-// PgBouncer transaction-mode (port 6543) cannot support Prisma's interactive
-// $transaction(async tx => {...}) API because PgBouncer recycles the connection
-// between async awaits, losing the transaction context (P2028).
-//
-// Strategy:
-//  1. All reads happen outside any transaction.
-//  2. Online stock decrements use the ARRAY-form $transaction([updateMany, ...])
-//     which sends BEGIN + queries + COMMIT in a single network round-trip — safe
-//     with PgBouncer transaction mode.
-//  3. order.create (with nested items + payments) is a single atomic Prisma op.
-//  4. stockMovement.createMany is a supplementary audit write; best-effort.
-//  5. On partial failure (stock decremented but order.create throws) the handler
-//     re-increments stock as a compensating write.
 
 export async function createOrder(
   storeId: string,
@@ -49,7 +44,7 @@ export async function createOrder(
     if (existing) return { order: existing, duplicate: true };
   }
 
-  // ── 1. Fetch + validate products ─────────────────────────────────────────────
+  // ── 1. Fetch & validate products ─────────────────────────────────────────────
   const productIds = items.map((i) => i.productId);
   const products = await prisma.product.findMany({
     where: { id: { in: productIds }, storeId, isActive: true },
@@ -63,7 +58,7 @@ export async function createOrder(
 
   const productMap = new Map(products.map((p) => [p.id, p]));
 
-  // ── 2. Server-compute totals — never trust client ────────────────────────────
+  // ── 2. Server-compute totals ─────────────────────────────────────────────────
   let subtotal = 0;
   let taxTotal = 0;
 
@@ -87,7 +82,7 @@ export async function createOrder(
   const discountAmount = discount ?? 0;
   const grandTotal = Math.max(0, subtotal + taxTotal - discountAmount);
 
-  // ── 3. Validate payment sum ───────────────────────────────────────────────────
+  // ── 3. Validate payment sum ──────────────────────────────────────────────────
   const paymentSum = payments.reduce((acc, p) => acc + p.amount, 0);
   if (Math.abs(Math.round(paymentSum) - Math.round(grandTotal)) > 1) {
     throw new AppError(
@@ -96,7 +91,7 @@ export async function createOrder(
     );
   }
 
-  // ── 4. Fetch branch + existing inventory (parallel) ──────────────────────────
+  // ── 4. Parallel reads: branch + current inventory ────────────────────────────
   const [branch, existingInventory] = await Promise.all([
     prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }),
     prisma.inventoryItem.findMany({
@@ -108,7 +103,7 @@ export async function createOrder(
 
   const invMap = new Map(existingInventory.map((ii) => [ii.productId, ii]));
 
-  // ── 5. Pre-validate stock (online orders only) ────────────────────────────────
+  // ── 5. Pre-validate stock (online orders only) ───────────────────────────────
   if (!isOffline) {
     for (const item of items) {
       const inv = invMap.get(item.productId);
@@ -122,7 +117,7 @@ export async function createOrder(
     }
   }
 
-  // ── 6. Generate order number ──────────────────────────────────────────────────
+  // ── 6. Generate order number ─────────────────────────────────────────────────
   const prefix = branch.name
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, '')
@@ -134,14 +129,16 @@ export async function createOrder(
   const hasPaystack = payments.some((p) => p.method === 'PAYSTACK');
   const orderStatus: OrderStatus = hasPaystack ? OrderStatus.PENDING : OrderStatus.COMPLETED;
 
-  // ── 7. Inventory updates ──────────────────────────────────────────────────────
+  // ── 7. Inventory updates ─────────────────────────────────────────────────────
   let stockDiscrepancy = false;
-  // Maps productId → inventoryItemId (needed for movements)
-  const finalInvIds = new Map(existingInventory.map((ii) => [ii.productId, ii.id]));
+  // Maps productId → inventoryItem.id (needed for stock movement records)
+  const finalInvIds = new Map<string, string>(
+    existingInventory.map((ii) => [ii.productId, ii.id]),
+  );
 
   if (isOffline) {
-    // Unconditional upsert — allows negative stock for items sold offline.
-    // The upsert result carries the post-decrement quantity for discrepancy detection.
+    // Unconditional upsert per item — allows negative stock.
+    // Sequential because we need each upsert's returned record for the ID.
     for (const item of items) {
       const inv = await prisma.inventoryItem.upsert({
         where: { productId_branchId: { productId: item.productId, branchId } },
@@ -157,42 +154,43 @@ export async function createOrder(
       finalInvIds.set(item.productId, inv.id);
     }
   } else {
-    // Array-form $transaction: sends BEGIN + all updateMany + COMMIT in one
-    // round-trip. Safe with PgBouncer transaction mode (no connection released
-    // between the statements of the same SQL transaction).
-    const stockOps = items.map((item) =>
-      prisma.inventoryItem.updateMany({
-        where: { productId: item.productId, branchId, quantity: { gte: item.quantity } },
-        data: { quantity: { decrement: item.quantity } },
-      }),
+    // Batch-decrement with per-item stock guards.
+    // prisma.$transaction([...]) array form sends BEGIN/ops/COMMIT in one
+    // round-trip — fully compatible with PgBouncer transaction mode.
+    const stockResults = await prisma.$transaction(
+      items.map((item) =>
+        prisma.inventoryItem.updateMany({
+          where: { productId: item.productId, branchId, quantity: { gte: item.quantity } },
+          data: { quantity: { decrement: item.quantity } },
+        }),
+      ),
     );
-    const stockResults = await prisma.$transaction(stockOps);
 
-    // Check guards — if any returned count=0, compensate and reject.
-    const failIdx = stockResults.findIndex((r) => r.count === 0);
-    if (failIdx !== -1) {
-      const toRestore = items.slice(0, failIdx);
-      if (toRestore.length > 0) {
-        await prisma
-          .$transaction(
-            toRestore.map((item) =>
-              prisma.inventoryItem.updateMany({
-                where: { productId: item.productId, branchId },
-                data: { quantity: { increment: item.quantity } },
-              }),
-            ),
-          )
-          .catch(() => {});
+    for (let i = 0; i < stockResults.length; i++) {
+      if (stockResults[i].count === 0) {
+        // Re-increment any items successfully decremented before this one.
+        const toRestore = items.slice(0, i);
+        if (toRestore.length > 0) {
+          await prisma
+            .$transaction(
+              toRestore.map((item) =>
+                prisma.inventoryItem.updateMany({
+                  where: { productId: item.productId, branchId },
+                  data: { quantity: { increment: item.quantity } },
+                }),
+              ),
+            )
+            .catch(() => {});
+        }
+        throw new AppError(
+          `Insufficient stock for "${productMap.get(items[i].productId)!.name}" (requested ${items[i].quantity})`,
+          400,
+        );
       }
-      const p = productMap.get(items[failIdx].productId)!;
-      throw new AppError(
-        `Insufficient stock for "${p.name}" (requested ${items[failIdx].quantity})`,
-        400,
-      );
     }
   }
 
-  // ── 8. Build stock movement data ─────────────────────────────────────────────
+  // ── 8. Build stock-movement payload ─────────────────────────────────────────
   const movementData = items
     .map((item) => {
       const inventoryItemId = finalInvIds.get(item.productId);
@@ -207,55 +205,37 @@ export async function createOrder(
     })
     .filter((d): d is NonNullable<typeof d> => d !== null);
 
-  // ── 9. Create order (atomic single Prisma op: order + items + payments) ───────
-  let order: OrderWithDetails;
-  try {
-    order = await prisma.order.create({
-      data: {
-        orderNumber,
-        storeId,
-        branchId,
-        cashierId,
-        status: orderStatus,
-        subtotal: new Prisma.Decimal(subtotal),
-        taxTotal: new Prisma.Decimal(taxTotal),
-        discountTotal: new Prisma.Decimal(discountAmount),
-        grandTotal: new Prisma.Decimal(grandTotal),
-        ...(clientOrderId && { clientOrderId }),
-        ...(createdAtClient && { createdAtClient: new Date(createdAtClient) }),
-        ...(offlineReference && { offlineReference }),
-        stockDiscrepancy,
-        items: { createMany: { data: lineItems } },
-        payments: {
-          createMany: {
-            data: payments.map((p) => ({
-              method: p.method,
-              amount: new Prisma.Decimal(p.amount),
-              status: p.method === 'PAYSTACK' ? PaymentStatus.PENDING : PaymentStatus.SUCCESS,
-            })),
-          },
+  // ── 9. Create order (single atomic Prisma write) ─────────────────────────────
+  const order = await prisma.order.create({
+    data: {
+      orderNumber,
+      storeId,
+      branchId,
+      cashierId,
+      status: orderStatus,
+      subtotal: new Prisma.Decimal(subtotal),
+      taxTotal: new Prisma.Decimal(taxTotal),
+      discountTotal: new Prisma.Decimal(discountAmount),
+      grandTotal: new Prisma.Decimal(grandTotal),
+      ...(clientOrderId && { clientOrderId }),
+      ...(createdAtClient && { createdAtClient: new Date(createdAtClient) }),
+      ...(offlineReference && { offlineReference }),
+      stockDiscrepancy,
+      items: { createMany: { data: lineItems } },
+      payments: {
+        createMany: {
+          data: payments.map((p) => ({
+            method: p.method,
+            amount: new Prisma.Decimal(p.amount),
+            status: p.method === 'PAYSTACK' ? PaymentStatus.PENDING : PaymentStatus.SUCCESS,
+          })),
         },
       },
-      include: { items: true, payments: true },
-    });
-  } catch (err) {
-    // Compensate: re-increment inventory that was decremented in step 7.
-    if (!isOffline && items.length > 0) {
-      await prisma
-        .$transaction(
-          items.map((item) =>
-            prisma.inventoryItem.updateMany({
-              where: { productId: item.productId, branchId },
-              data: { quantity: { increment: item.quantity } },
-            }),
-          ),
-        )
-        .catch(() => {});
-    }
-    throw err;
-  }
+    },
+    include: { items: true, payments: true },
+  });
 
-  // ── 10. Stock movements (supplementary audit — best-effort) ───────────────────
+  // ── 10. Stock movements (supplementary audit; best-effort) ───────────────────
   if (movementData.length > 0) {
     await prisma.stockMovement.createMany({ data: movementData }).catch(() => {});
   }
@@ -355,13 +335,8 @@ export async function getOrder(
 }
 
 // ─── Refund order ─────────────────────────────────────────────────────────────
-//
-// Same PgBouncer constraint as createOrder — avoids interactive transactions.
-// Flow:
-//  1. Pre-fetch inventory item IDs (needed for movement records).
-//  2. For each order item: upsert inventory (increment stock).
-//  3. Create RETURN stock movements.
-//  4. Update order status to REFUNDED + create refund payment record.
+// Inventory upserts run sequentially (need the returned ID for movements),
+// then movements + order-status update run in one array-form transaction.
 
 export async function refundOrder(
   storeId: string,
@@ -389,51 +364,40 @@ export async function refundOrder(
     throw new AppError('Only completed orders can be refunded', 400);
   }
 
-  const refundableItems = order.items.filter((item) => item.productId !== null);
+  const refundableItems = order.items.filter((i) => i.productId);
 
-  // ── Pre-fetch inventory IDs for movement records ───────────────────────────
-  const productIds = refundableItems.map((i) => i.productId as string);
-  const existingInv = await prisma.inventoryItem.findMany({
-    where: { branchId: order.branchId, productId: { in: productIds } },
-    select: { id: true, productId: true },
-  });
-  const invIdMap = new Map(existingInv.map((ii) => [ii.productId, ii.id]));
-
-  // ── Re-stock each item (upsert in case record didn't exist) ────────────────
+  // Step 1: Upsert inventory items sequentially to collect their IDs.
+  const invIdMap = new Map<string, string>();
   for (const item of refundableItems) {
     const inv = await prisma.inventoryItem.upsert({
-      where: {
-        productId_branchId: { productId: item.productId as string, branchId: order.branchId },
-      },
+      where: { productId_branchId: { productId: item.productId!, branchId: order.branchId } },
       update: { quantity: { increment: item.quantity } },
       create: {
-        productId: item.productId as string,
+        productId: item.productId!,
         branchId: order.branchId,
         quantity: item.quantity,
         lowStockThreshold: 5,
       },
     });
-    // Capture ID for items that were just created
-    invIdMap.set(item.productId as string, inv.id);
+    invIdMap.set(item.productId!, inv.id);
   }
 
-  // ── RETURN stock movements ─────────────────────────────────────────────────
-  for (const item of refundableItems) {
-    const inventoryItemId = invIdMap.get(item.productId as string);
-    if (!inventoryItemId) continue;
-    await prisma.stockMovement.create({
-      data: {
-        inventoryItemId,
-        type: StockMovementType.RETURN,
-        quantity: item.quantity,
-        note: `Refund for order ${order.orderNumber}`,
-        userId,
-      },
-    });
-  }
+  // Step 2: Movements + order-status update in one array-form transaction.
+  const movementOps = refundableItems
+    .filter((i) => invIdMap.has(i.productId!))
+    .map((item) =>
+      prisma.stockMovement.create({
+        data: {
+          inventoryItemId: invIdMap.get(item.productId!)!,
+          type: StockMovementType.RETURN,
+          quantity: item.quantity,
+          note: `Refund for order ${order.orderNumber}`,
+          userId,
+        },
+      }),
+    );
 
-  // ── Update order status + refund payment ──────────────────────────────────
-  const refunded = await prisma.order.update({
+  const orderUpdateOp = prisma.order.update({
     where: { id: orderId },
     data: {
       status: OrderStatus.REFUNDED,
@@ -447,6 +411,9 @@ export async function refundOrder(
     },
     include: { items: true, payments: true },
   });
+
+  const results = await prisma.$transaction([...movementOps, orderUpdateOp]);
+  const refunded = results[results.length - 1] as OrderWithDetails;
 
   await auditLog({
     storeId,

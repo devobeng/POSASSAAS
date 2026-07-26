@@ -1,9 +1,11 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuthStore } from '@/store/authStore';
 import { useUiStore } from '@/store/uiStore';
+import ChangePasswordModal from '@/components/auth/ChangePasswordModal';
 import type { Role } from '@/types';
 
 interface NavItem {
@@ -45,6 +47,12 @@ const NAV_ITEMS: NavItem[] = [
     label: 'Products',
     icon: <Icon path="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />,
     roles: ['STORE_ADMIN', 'SUPER_ADMIN'],
+  },
+  {
+    href: '/categories',
+    label: 'Categories',
+    icon: <Icon path="M7 7h.01M7 3h5.586a1 1 0 01.707.293l6.414 6.414a1 1 0 010 1.414l-6.586 6.586a1 1 0 01-1.414 0L5.293 11.293A1 1 0 015 10.586V4a1 1 0 011-1z" />,
+    roles: ['STORE_ADMIN'],
   },
   {
     href: '/inventory',
@@ -95,6 +103,7 @@ export default function Sidebar() {
   const router = useRouter();
   const { user, clearAuth } = useAuthStore();
   const { sidebarOpen } = useUiStore();
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
 
   const visibleItems = NAV_ITEMS.filter(
     (item) => user && item.roles.includes(user.role),
@@ -140,7 +149,13 @@ export default function Sidebar() {
       {/* User footer */}
       <div className="p-4 border-t border-gray-100 dark:border-gray-800">
         <p className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{user?.name}</p>
-        <p className="text-xs text-gray-400 truncate mb-3">{user?.email}</p>
+        <p className="text-xs text-gray-400 truncate mb-3">{user?.email ?? user?.phone}</p>
+        <button
+          onClick={() => setChangePasswordOpen(true)}
+          className="w-full text-xs text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 text-left font-medium mb-2"
+        >
+          Change password
+        </button>
         <button
           onClick={handleLogout}
           className="w-full text-xs text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 text-left font-medium"
@@ -148,6 +163,13 @@ export default function Sidebar() {
           Sign out
         </button>
       </div>
+
+      {changePasswordOpen && (
+        <ChangePasswordModal
+          onClose={() => setChangePasswordOpen(false)}
+          onSuccess={() => setChangePasswordOpen(false)}
+        />
+      )}
     </aside>
   );
 }

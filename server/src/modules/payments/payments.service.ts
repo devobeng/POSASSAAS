@@ -65,7 +65,9 @@ export async function verifyPayment(reference: string, storeId: string) {
     include: { order: true },
   });
 
-  if (!payment) throw new AppError('Payment record not found', 404);
+  // No Payment row — this is a SaaS subscription checkout, not a POS order payment.
+  if (!payment) return verifySubscriptionPayment(reference, storeId);
+
   if (payment.order.storeId !== storeId) throw new AppError('Payment not found', 404);
 
   if (tx.status === 'success' && payment.status !== 'SUCCESS') {
@@ -90,7 +92,7 @@ async function handleChargeSuccess(data: {
   reference: string;
   metadata?: Record<string, unknown>;
 }) {
-  const { reference } = data;
+  const { reference, metadata } = data;
 
   const payment = await prisma.payment.findUnique({
     where: { paystackReference: reference },
@@ -98,7 +100,12 @@ async function handleChargeSuccess(data: {
   });
 
   if (!payment) {
-    logger.warn(`Webhook charge.success: no Payment with reference ${reference}`);
+    // No Payment row — either a SaaS subscription checkout, or a stale/unknown reference.
+    if (metadata?.type === 'subscription' && metadata.storeId && metadata.planId) {
+      await activateSubscription(metadata.storeId as string, metadata.planId as string);
+    } else {
+      logger.warn(`Webhook charge.success: no Payment with reference ${reference}`);
+    }
     return;
   }
 
@@ -241,6 +248,15 @@ export async function processWebhookEvent(event: WebhookEvent): Promise<void> {
 
 // ─── SaaS subscription flow ───────────────────────────────────────────────────
 
+/** Activates a plan on a store directly — used for the Free plan (no payment)
+ *  and by the paid-plan verify/webhook paths once Paystack confirms payment. */
+async function activateSubscription(storeId: string, planId: string) {
+  await prisma.store.update({
+    where: { id: storeId },
+    data: { subscriptionPlanId: planId, subscriptionStatus: 'ACTIVE', trialEndsAt: null },
+  });
+}
+
 export async function subscribeToPlan(
   storeId: string,
   userId: string,
@@ -259,6 +275,12 @@ export async function subscribeToPlan(
 
   if (!store) throw new AppError('Store not found', 404);
   if (!plan) throw new AppError('Plan not found', 404);
+
+  // Free plan — activate immediately, no Paystack involved.
+  if (Number(plan.price) === 0) {
+    await activateSubscription(storeId, planId);
+    return { free: true as const };
+  }
 
   // Ensure a Paystack customer exists for this store
   let customerCode = store.paystackCustomerCode;
@@ -286,7 +308,24 @@ export async function subscribeToPlan(
     metadata: { storeId, planId, type: 'subscription' },
   });
 
-  return txInit;
+  return { free: false as const, ...txInit };
+}
+
+/** Verifies a subscription-checkout reference (no Payment/Order row exists
+ *  for these — they're tracked purely via Paystack transaction metadata). */
+async function verifySubscriptionPayment(reference: string, storeId: string) {
+  const tx = await paystack.verifyTransaction(reference);
+
+  if (tx.metadata?.storeId !== storeId) {
+    throw new AppError('Payment not found', 404);
+  }
+
+  if (tx.status === 'success') {
+    const planId = tx.metadata.planId as string;
+    await activateSubscription(storeId, planId);
+  }
+
+  return { paystackStatus: tx.status };
 }
 
 export async function getSubscriptionStatus(storeId: string) {
@@ -294,8 +333,9 @@ export async function getSubscriptionStatus(storeId: string) {
     where: { id: storeId },
     select: {
       subscriptionStatus: true,
+      trialEndsAt: true,
       subscriptionPlan: {
-        select: { name: true, price: true, maxBranches: true, maxUsers: true, features: true },
+        select: { id: true, name: true, price: true, maxBranches: true, maxUsers: true, features: true },
       },
     },
   });

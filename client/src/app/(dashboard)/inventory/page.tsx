@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuthStore } from '@/store/authStore';
-import { useInventory, useAdjustStock, useTransferStock, useStockMovements } from '@/hooks/api/useInventory';
+import { useInventory, useAdjustStock, useTransferStock, useStockMovements, type StockMovement } from '@/hooks/api/useInventory';
 import { useBranches } from '@/hooks/api/useBranches';
 import { useUiStore } from '@/store/uiStore';
 import DataTable, { type Column } from '@/components/ui/DataTable';
@@ -22,6 +22,17 @@ export default function InventoryPage() {
 
   const [branchId, setBranchId] = useState(user?.branchId ?? '');
   const [tab, setTab] = useState<Tab>('stock');
+
+  // STORE_ADMIN/SUPER_ADMIN have no branchId of their own — without this,
+  // branchId stays '' forever (the inventory/movements queries are disabled
+  // until it's set) and the branch picker below only rendered when there
+  // were 2+ branches, so a single-branch store had no way to populate it at all.
+  useEffect(() => {
+    if (!branchId && branches && branches.length > 0) {
+      setBranchId(branches[0].id);
+    }
+  }, [branchId, branches]);
+
   const [page, setPage] = useState(1);
   const [adjustItem, setAdjustItem] = useState<InventoryItem | null>(null);
   const [transferItem, setTransferItem] = useState<InventoryItem | null>(null);
@@ -124,7 +135,7 @@ export default function InventoryPage() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Inventory</h1>
-        {branches && branches.length > 1 && (
+        {!user?.branchId && branches && branches.length > 0 && (
           <select
             value={branchId}
             onChange={(e) => { setBranchId(e.target.value); setPage(1); }}
@@ -164,7 +175,7 @@ export default function InventoryPage() {
           emptyDescription="Add products and stock to see them here"
         />
       ) : (
-        <MovementsTable data={(movementsData as { items: MovementRow[]; meta: unknown } | undefined)?.items ?? []} isLoading={movementsLoading} pagination={(movementsData as { meta: { total: number; page: number; limit: number; totalPages: number } } | undefined)?.meta} onPageChange={setPage} />
+        <MovementsTable data={movementsData?.items ?? []} isLoading={movementsLoading} pagination={movementsData?.meta} onPageChange={setPage} />
       )}
 
       {/* Adjust drawer */}
@@ -231,28 +242,18 @@ export default function InventoryPage() {
 }
 
 // ── Movements sub-table ───────────────────────────────────────────────────────
-interface MovementRow {
-  id: string;
-  type: string;
-  quantity: number;
-  note: string | null;
-  createdAt: string;
-  inventoryItem?: { product?: { name: string } | null };
-  user?: { name: string } | null;
-}
-
 const MOVEMENT_VARIANT: Record<string, 'success' | 'error' | 'info' | 'neutral'> = {
   PURCHASE: 'success', SALE: 'error', RETURN: 'success',
   ADJUSTMENT: 'info', TRANSFER_IN: 'success', TRANSFER_OUT: 'error',
 };
 
 function MovementsTable({ data, isLoading, pagination, onPageChange }: {
-  data: MovementRow[];
+  data: StockMovement[];
   isLoading: boolean;
   pagination?: { total: number; page: number; limit: number; totalPages: number };
   onPageChange?: (p: number) => void;
 }) {
-  const cols: Column<MovementRow>[] = [
+  const cols: Column<StockMovement>[] = [
     { key: 'type', header: 'Type', render: (m) => <Badge label={m.type.replace('_', ' ')} variant={MOVEMENT_VARIANT[m.type] ?? 'neutral'} /> },
     { key: 'product', header: 'Product', render: (m) => m.inventoryItem?.product?.name ?? '—' },
     { key: 'qty', header: 'Qty', render: (m) => <span className={`font-mono font-semibold ${m.quantity > 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>{m.quantity > 0 ? `+${m.quantity}` : m.quantity}</span> },
@@ -260,5 +261,5 @@ function MovementsTable({ data, isLoading, pagination, onPageChange }: {
     { key: 'user', header: 'By', render: (m) => <span className="text-xs">{m.user?.name ?? '—'}</span> },
     { key: 'date', header: 'Date', render: (m) => <span className="text-xs text-gray-400">{new Date(m.createdAt).toLocaleString()}</span> },
   ];
-  return <DataTable columns={cols} data={data} isLoading={isLoading} keyExtractor={(m) => m.id} pagination={pagination as { total: number; page: number; limit: number; totalPages: number } | undefined} onPageChange={onPageChange} emptyMessage="No stock movements yet" />;
+  return <DataTable columns={cols} data={data} isLoading={isLoading} keyExtractor={(m) => m.id} pagination={pagination} onPageChange={onPageChange} emptyMessage="No stock movements yet" />;
 }

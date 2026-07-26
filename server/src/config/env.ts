@@ -21,6 +21,11 @@ const envSchema = z.object({
   CLOUDINARY_API_SECRET: z.string().default(''),
   REDIS_URL: z.string().optional(),
   LOG_LEVEL: z.string().default('info'),
+  HUBTEL_CLIENT_ID: z.string().default(''),
+  HUBTEL_CLIENT_SECRET: z.string().default(''),
+  HUBTEL_SENDER_ID: z.string().default(''),
+  HUBTEL_OTP_BASE_URL: z.string().default('https://api-otp.hubtel.com/v1/otp'),
+  DEFAULT_COUNTRY_CODE: z.string().default('233'),
 });
 
 const parsed = envSchema.safeParse(process.env);

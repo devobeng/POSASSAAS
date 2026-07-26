@@ -12,6 +12,7 @@ import { storeRouter } from './modules/store/store.routes';
 import { branchesRouter } from './modules/branches/branches.routes';
 import { usersRouter } from './modules/users/users.routes';
 import { adminRouter } from './modules/admin/admin.routes';
+import { plansRouter } from './modules/plans/plans.routes';
 import { categoriesRouter } from './modules/categories/categories.routes';
 import { productsRouter } from './modules/products/products.routes';
 import { inventoryRouter } from './modules/inventory/inventory.routes';
@@ -23,6 +24,12 @@ import { expensesRouter } from './modules/expenses/expenses.routes';
 import { errorHandler, notFound } from './middleware/error';
 
 const app = express();
+
+// Disable Express's default ETag generation for API responses — ETags cause
+// browsers to send conditional requests (If-None-Match) which result in 304
+// responses with empty bodies. axios treats 304 as an error, breaking the
+// token-refresh retry flow and leaving React Query without data.
+app.set('etag', false);
 
 // ── Security headers ──────────────────────────────────────────────────────────
 app.use(helmet());
@@ -85,12 +92,22 @@ app.get('/healthz', async (_req, res) => {
   }
 });
 
+// ── Prevent browser caching of all API responses ─────────────────────────────
+// Combined with etag:false above this ensures browsers never store API
+// responses and therefore never send conditional requests that result in
+// 304 empty-body replies breaking the axios token-refresh retry loop.
+app.use('/api', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, private');
+  next();
+});
+
 // ── API routes ────────────────────────────────────────────────────────────────
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/store', storeRouter);
 app.use('/api/v1/branches', branchesRouter);
 app.use('/api/v1/users', usersRouter);
 app.use('/api/v1/admin', adminRouter);
+app.use('/api/v1/plans', plansRouter);
 app.use('/api/v1/categories', categoriesRouter);
 app.use('/api/v1/products', productsRouter);
 app.use('/api/v1/inventory', inventoryRouter);

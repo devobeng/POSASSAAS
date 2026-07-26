@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { X, Camera } from 'lucide-react';
 
 interface Props {
   onScan: (barcode: string) => void;
@@ -20,8 +21,12 @@ export default function BarcodeCamera({ onScan, onClose }: Props) {
     const init = async () => {
       try {
         setScanning(true);
-        // Dynamic import to avoid SSR issues
-        const { BrowserMultiFormatReader, NotFoundException } = await import('@zxing/browser');
+        // Dynamic import to avoid SSR issues. NotFoundException lives in
+        // @zxing/library — @zxing/browser only re-exports BarcodeFormat from it.
+        const [{ BrowserMultiFormatReader }, { NotFoundException }] = await Promise.all([
+          import('@zxing/browser'),
+          import('@zxing/library'),
+        ]);
         const reader = new BrowserMultiFormatReader();
         readerRef.current = reader;
 
@@ -85,7 +90,7 @@ export default function BarcodeCamera({ onScan, onClose }: Props) {
             onClick={onClose}
             className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
           >
-            ✕
+            <X className="w-4 h-4" />
           </button>
         </div>
 
@@ -93,7 +98,7 @@ export default function BarcodeCamera({ onScan, onClose }: Props) {
           {error ? (
             <div className="absolute inset-0 flex items-center justify-center text-center px-6">
               <div>
-                <p className="text-4xl mb-3">📷</p>
+                <Camera className="w-10 h-10 mb-3 mx-auto text-gray-400" />
                 <p className="text-sm text-gray-300">{error}</p>
               </div>
             </div>

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate, authorize } from '../../middleware/auth';
 import { tenantScope } from '../../middleware/tenant';
+import { requireFeature } from '../../middleware/subscription';
 import { validate } from '../../middleware/validate';
 import {
   adjustStockSchema,
@@ -31,8 +32,12 @@ inventoryRouter.post(
   inventoryController.adjustStock,
 );
 
+// Moving stock between branches is inherently a multi-branch operation —
+// requires the 'multiBranch' feature (Pro only), even for stores whose plan
+// happens to allow 2 branches without that feature.
 inventoryRouter.post(
   '/transfer',
+  requireFeature('multiBranch'),
   validate(transferStockSchema),
   inventoryController.transferStock,
 );

@@ -55,6 +55,18 @@ export function useCatalogSync(branchId: string | null) {
 
     sync();
     const id = setInterval(sync, SYNC_INTERVAL_MS);
-    return () => clearInterval(id);
+
+    // Re-sync as soon as the cashier comes back to this tab/window — otherwise
+    // stock changed elsewhere (e.g. an admin just adjusted inventory) wouldn't
+    // show up here until the next 5-minute tick or a full page reload.
+    const onVisible = () => { if (document.visibilityState === 'visible') sync(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', sync);
+
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', sync);
+    };
   }, [branchId]);
 }

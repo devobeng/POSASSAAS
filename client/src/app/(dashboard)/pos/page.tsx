@@ -19,6 +19,7 @@ import SyncIssuesPanel from '@/components/pos/SyncIssuesPanel';
 import BarcodeCamera from '@/components/pos/BarcodeCamera';
 import { useUiStore } from '@/store/uiStore';
 import { useAuditDrawer } from '@/hooks/useAuditDrawer';
+import { Store as StoreIcon } from 'lucide-react';
 import type { Order } from '@/types';
 
 export interface OrderSnapshot {
@@ -166,7 +167,7 @@ export default function POSPage() {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center p-8">
-          <p className="text-4xl mb-3">🏪</p>
+          <StoreIcon className="w-10 h-10 mb-3 mx-auto text-gray-300 dark:text-gray-700" />
           <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">No branch assigned</p>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
             Contact your store admin to assign you to a branch.

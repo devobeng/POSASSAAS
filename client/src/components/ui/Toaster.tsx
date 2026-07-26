@@ -1,5 +1,6 @@
 'use client';
 
+import { CheckCircle2, XCircle, AlertTriangle, Info, X } from 'lucide-react';
 import { useUiStore } from '@/store/uiStore';
 import type { Toast } from '@/store/uiStore';
 
@@ -10,11 +11,11 @@ const COLOURS: Record<Toast['type'], string> = {
   info:    'bg-blue-50 border-blue-400 text-blue-800 dark:bg-blue-900/40 dark:border-blue-600 dark:text-blue-200',
 };
 
-const ICON: Record<Toast['type'], string> = {
-  success: '✓',
-  error:   '✕',
-  warning: '⚠',
-  info:    'ℹ',
+const ICON: Record<Toast['type'], typeof CheckCircle2> = {
+  success: CheckCircle2,
+  error:   XCircle,
+  warning: AlertTriangle,
+  info:    Info,
 };
 
 export function Toaster() {
@@ -24,22 +25,25 @@ export function Toaster() {
 
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm w-full">
-      {toasts.map((t) => (
-        <div
-          key={t.id}
-          role="alert"
-          className={`flex items-start gap-3 px-4 py-3 rounded-lg border text-sm shadow-lg animate-in slide-in-from-right-5 ${COLOURS[t.type]}`}
-        >
-          <span className="font-bold shrink-0">{ICON[t.type]}</span>
-          <span className="flex-1">{t.message}</span>
-          <button
-            onClick={() => removeToast(t.id)}
-            className="shrink-0 opacity-60 hover:opacity-100 text-lg leading-none"
+      {toasts.map((t) => {
+        const Icon = ICON[t.type];
+        return (
+          <div
+            key={t.id}
+            role="alert"
+            className={`flex items-start gap-3 px-4 py-3 rounded-lg border text-sm shadow-lg animate-in slide-in-from-right-5 ${COLOURS[t.type]}`}
           >
-            ×
-          </button>
-        </div>
-      ))}
+            <Icon className="w-5 h-5 shrink-0" />
+            <span className="flex-1">{t.message}</span>
+            <button
+              onClick={() => removeToast(t.id)}
+              className="shrink-0 opacity-60 hover:opacity-100"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }

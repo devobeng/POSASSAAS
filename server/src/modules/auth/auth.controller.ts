@@ -4,7 +4,13 @@ import { sendSuccess } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { AppError } from '../../middleware/error';
 import { env } from '../../config/env';
-import type { LoginInput, RegisterStoreInput } from './auth.schema';
+import type {
+  LoginInput,
+  RegisterStoreInput,
+  ForgotPasswordRequestInput,
+  ForgotPasswordVerifyInput,
+  ForgotPasswordResetInput,
+} from './auth.schema';
 // refresh token is read from the httpOnly cookie, not the request body
 
 export const REFRESH_COOKIE = 'pos_rt';
@@ -58,4 +64,19 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
 export const me = asyncHandler(async (req: Request, res: Response) => {
   const user = await authService.getMe(req.user!.sub);
   sendSuccess(res, user);
+});
+
+export const forgotPasswordRequest = asyncHandler(async (req: Request, res: Response) => {
+  const result = await authService.forgotPasswordRequest(req.body as ForgotPasswordRequestInput);
+  sendSuccess(res, result, 'If that number is registered, a verification code has been sent');
+});
+
+export const forgotPasswordVerify = asyncHandler(async (req: Request, res: Response) => {
+  const result = await authService.verifyForgotPasswordOtp(req.body as ForgotPasswordVerifyInput);
+  sendSuccess(res, result, 'Code verified');
+});
+
+export const forgotPasswordReset = asyncHandler(async (req: Request, res: Response) => {
+  await authService.resetPasswordWithSmsToken(req.body as ForgotPasswordResetInput);
+  sendSuccess(res, null, 'Password reset successfully');
 });

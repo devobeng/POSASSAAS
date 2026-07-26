@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { prisma } from '../../config/database';
 import { hashPassword, comparePassword } from '../../utils/hash';
+import { normalizePhone } from '../../utils/phone';
 import { AppError } from '../../middleware/error';
 import { auditLog } from '../../utils/audit';
 import type { JwtPayload } from '../../utils/jwt';
@@ -78,7 +79,7 @@ export async function getUsers(storeId: string, actor: JwtPayload, query: GetUse
     prisma.user.findMany({
       where,
       select: {
-        id: true, email: true, name: true, role: true, isActive: true,
+        id: true, email: true, phone: true, name: true, role: true, isActive: true,
         storeId: true, branchId: true, mustChangePassword: true, createdAt: true,
         branch: { select: { id: true, name: true } },
       },
@@ -96,7 +97,7 @@ export async function getUser(storeId: string, userId: string) {
   const user = await prisma.user.findFirst({
     where: { id: userId, storeId },
     select: {
-      id: true, email: true, name: true, role: true, isActive: true,
+      id: true, email: true, phone: true, name: true, role: true, isActive: true,
       storeId: true, branchId: true, mustChangePassword: true, createdAt: true,
       branch: { select: { id: true, name: true } },
     },
@@ -123,11 +124,14 @@ export async function createUser(
 
   await assertUserLimit(storeId);
 
-  const existing = await prisma.user.findUnique({
-    where: { email: data.email },
+  const phone = normalizePhone(data.phone);
+  if (!phone) throw new AppError('Enter a valid phone number', 422);
+
+  const existing = await prisma.user.findFirst({
+    where: { OR: [{ phone }, ...(data.email ? [{ email: data.email }] : [])] },
     select: { id: true },
   });
-  if (existing) throw new AppError('An account with that email already exists', 409);
+  if (existing) throw new AppError('An account with that email or phone already exists', 409);
 
   const tempPassword = generateTempPassword();
   const hashedPassword = await hashPassword(tempPassword);
@@ -135,6 +139,7 @@ export async function createUser(
   const user = await prisma.user.create({
     data: {
       email: data.email,
+      phone,
       name: data.name,
       role: data.role as Role,
       password: hashedPassword,
@@ -143,7 +148,7 @@ export async function createUser(
       mustChangePassword: true,
     },
     select: {
-      id: true, email: true, name: true, role: true, storeId: true,
+      id: true, email: true, phone: true, name: true, role: true, storeId: true,
       branchId: true, mustChangePassword: true, createdAt: true,
     },
   });

@@ -1,6 +1,7 @@
 'use client';
 
 import Image from 'next/image';
+import { Package } from 'lucide-react';
 import type { Product } from '@/types';
 
 interface Props {
@@ -58,7 +59,7 @@ export default function ProductCard({ product, stock, cartQty, onAdd }: Props) {
             className="w-full h-full object-cover"
           />
         ) : (
-          <span className="text-3xl">📦</span>
+          <Package className="w-8 h-8 text-gray-300 dark:text-gray-700" />
         )}
       </div>
 

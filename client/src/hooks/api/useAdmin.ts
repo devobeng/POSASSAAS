@@ -2,11 +2,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
 import type { ApiResponse, PaginationMeta, SubscriptionStatus } from '@/types';
 
-interface AdminStore {
+export interface AdminStore {
   id: string;
   name: string;
   slug: string;
-  subscriptionPlan: string;
+  subscriptionPlan: { name: string; price: string } | null;
   subscriptionStatus: SubscriptionStatus;
   createdAt: string;
   _count?: { branches: number; users: number };
@@ -33,8 +33,11 @@ export function useAdminStores(params: { page?: number; limit?: number; search?:
     queryKey: ['admin', 'stores', params],
     queryFn: () =>
       api
-        .get<ApiResponse<{ items: AdminStore[]; meta: PaginationMeta }>>('/admin/stores', { params })
-        .then((r) => r.data.data),
+        .get<ApiResponse<AdminStore[]>>('/admin/stores', { params })
+        .then((r) => ({
+          items: r.data.data ?? [],
+          meta: r.data.meta as PaginationMeta | undefined,
+        })),
   });
 }
 

@@ -41,3 +41,48 @@ export function requireActiveSubscription() {
     }
   };
 }
+
+/**
+ * Applied per-route (or per-router). Blocks the request entirely — GET
+ * included, since most feature-gated endpoints here are read-only reports —
+ * unless the store's current plan has `featureName: true` in its `features`
+ * JSON. SUPER_ADMIN is always bypassed — they're the platform operator
+ * inspecting a store (via ?storeId=), not that store's customer, so its
+ * plan's feature limits shouldn't apply to them. A store with no plan
+ * attached at all (shouldn't normally happen, but defensively) is treated
+ * as having no features.
+ */
+export function requireFeature(featureName: string) {
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    if (req.user?.role === 'SUPER_ADMIN') return next();
+
+    const storeId = req.user?.storeId;
+    if (!storeId) {
+      return next(new AppError('User account is not associated with a store', 403));
+    }
+
+    try {
+      const store = await prisma.store.findUnique({
+        where: { id: storeId },
+        select: { subscriptionPlan: { select: { features: true } } },
+      });
+
+      if (!store) return next(new AppError('Store not found', 404));
+
+      const features = (store.subscriptionPlan?.features ?? {}) as Record<string, unknown>;
+      if (features[featureName] !== true) {
+        return next(
+          new AppError(
+            'Upgrade your plan to access this feature.',
+            402,
+            'FEATURE_LOCKED',
+          ),
+        );
+      }
+
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
+}
