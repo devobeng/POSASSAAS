@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Check, Circle } from 'lucide-react';
 import { useChangePassword } from '@/hooks/api/useUsers';
 import { useUiStore } from '@/store/uiStore';
+import PasswordInput from '@/components/ui/PasswordInput';
 
 interface Props {
   /** Forced mode (e.g. mustChangePassword on first login) hides Cancel and can't be dismissed. */
@@ -77,16 +78,16 @@ export default function ChangePasswordModal({ forced, onClose, onSuccess }: Prop
             <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
               {forced ? 'Temporary password' : 'Current password'}
             </label>
-            <input
-              type="password" required autoComplete="current-password"
+            <PasswordInput
+              required autoComplete="current-password"
               value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)}
               className={inputClass}
             />
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">New password</label>
-            <input
-              type="password" required autoComplete="new-password"
+            <PasswordInput
+              required autoComplete="new-password"
               value={newPassword} onChange={(e) => setNewPassword(e.target.value)}
               className={inputClass}
             />
@@ -100,8 +101,8 @@ export default function ChangePasswordModal({ forced, onClose, onSuccess }: Prop
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Confirm new password</label>
-            <input
-              type="password" required autoComplete="new-password"
+            <PasswordInput
+              required autoComplete="new-password"
               value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)}
               className={inputClass}
             />

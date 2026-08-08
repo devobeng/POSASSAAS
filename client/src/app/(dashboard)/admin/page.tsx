@@ -9,6 +9,7 @@ import DataTable, { type Column } from '@/components/ui/DataTable';
 import Badge from '@/components/ui/Badge';
 import Modal from '@/components/ui/Modal';
 import Drawer from '@/components/ui/Drawer';
+import { blockInvalidNumberKey } from '@/lib/numericInput';
 
 interface StoreRow {
   id: string; name: string; slug: string;
@@ -219,16 +220,16 @@ export default function AdminPage() {
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Monthly price (GHS) <span className="text-red-500">*</span></label>
-            <input required type="number" min="0" step="0.01" value={planForm.price} onChange={(e) => setPlanForm((f) => ({ ...f, price: e.target.value }))} placeholder="49.00" className={inputClass} />
+            <input required type="number" min="0" step="0.01" value={planForm.price} onChange={(e) => setPlanForm((f) => ({ ...f, price: e.target.value }))} onKeyDown={blockInvalidNumberKey} placeholder="49.00" className={inputClass} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Max branches</label>
-              <input type="number" min="1" value={planForm.maxBranches} onChange={(e) => setPlanForm((f) => ({ ...f, maxBranches: e.target.value }))} className={inputClass} />
+              <input type="number" min="1" value={planForm.maxBranches} onChange={(e) => setPlanForm((f) => ({ ...f, maxBranches: e.target.value }))} onKeyDown={(e) => blockInvalidNumberKey(e, { allowDecimal: false })} className={inputClass} />
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Max users</label>
-              <input type="number" min="1" value={planForm.maxUsers} onChange={(e) => setPlanForm((f) => ({ ...f, maxUsers: e.target.value }))} className={inputClass} />
+              <input type="number" min="1" value={planForm.maxUsers} onChange={(e) => setPlanForm((f) => ({ ...f, maxUsers: e.target.value }))} onKeyDown={(e) => blockInvalidNumberKey(e, { allowDecimal: false })} className={inputClass} />
             </div>
           </div>
         </form>

@@ -6,6 +6,7 @@ import { Store as StoreIcon } from 'lucide-react';
 import { useStore, useUpdateStore, useUploadLogo } from '@/hooks/api/useStore';
 import { useUiStore } from '@/store/uiStore';
 import { useAuthStore } from '@/store/authStore';
+import { blockInvalidNumberKey } from '@/lib/numericInput';
 import Image from 'next/image';
 
 function trialDaysLeft(trialEndsAt: string | null | undefined): number | null {
@@ -127,6 +128,7 @@ export default function SettingsPage() {
                   min={1}
                   value={form.stockAdjustmentThreshold}
                   onChange={(e) => setForm((f) => ({ ...f, stockAdjustmentThreshold: e.target.value }))}
+                  onKeyDown={(e) => blockInvalidNumberKey(e, { allowDecimal: false })}
                   className={inputClass}
                 />
                 <p className="text-xs text-gray-400 mt-1">

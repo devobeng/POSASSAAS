@@ -17,6 +17,7 @@ import {
   useUploadExpenseReceipt,
 } from '@/hooks/api/useExpenses';
 import { useBranches } from '@/hooks/api/useBranches';
+import { blockInvalidNumberKey } from '@/lib/numericInput';
 import type { Expense, ExpenseStatus } from '@/types';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -378,6 +379,7 @@ export default function ExpensesPage() {
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-400">₦</span>
               <input type="number" required min="0.01" step="0.01" placeholder="0.00"
                 value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
+                onKeyDown={blockInvalidNumberKey}
                 className={`w-full pl-7 ${inputCls}`} />
             </div>
           </div>

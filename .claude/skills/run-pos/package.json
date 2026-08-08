@@ -1,0 +1,9 @@
+{
+  "name": "run-pos-driver",
+  "private": true,
+  "description": "Playwright-core driver used by the run-pos skill to drive the POS SaaS web app. Not part of the application — agent tooling only.",
+  "type": "module",
+  "dependencies": {
+    "playwright-core": "^1.55.1"
+  }
+}

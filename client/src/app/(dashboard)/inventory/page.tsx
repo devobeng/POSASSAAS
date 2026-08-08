@@ -20,6 +20,7 @@ import { useUiStore } from '@/store/uiStore';
 import DataTable, { type Column } from '@/components/ui/DataTable';
 import Badge from '@/components/ui/Badge';
 import Drawer from '@/components/ui/Drawer';
+import { blockInvalidNumberKey } from '@/lib/numericInput';
 import type { InventoryItem } from '@/types';
 
 type Tab = 'stock' | 'movements' | 'approvals';
@@ -288,6 +289,7 @@ export default function InventoryPage() {
           <div>
             <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Adjustment (+ to add, − to remove)</label>
             <input type="number" value={adjustForm.quantity} onChange={(e) => setAdjustForm((f) => ({ ...f, quantity: e.target.value }))}
+              onKeyDown={(e) => blockInvalidNumberKey(e, { allowNegative: true, allowDecimal: false })}
               placeholder="e.g. 10 or -5" className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500" />
           </div>
           <div>
@@ -329,6 +331,7 @@ export default function InventoryPage() {
           <div>
             <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Quantity <span className="text-red-500">*</span></label>
             <input type="number" min="1" value={transferForm.quantity} onChange={(e) => setTransferForm((f) => ({ ...f, quantity: e.target.value }))}
+              onKeyDown={(e) => blockInvalidNumberKey(e, { allowDecimal: false })}
               placeholder="How many units to transfer" className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500" />
           </div>
           <div>

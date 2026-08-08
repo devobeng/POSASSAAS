@@ -17,11 +17,44 @@ import { useAuthStore } from '../store/authStore';
 //  - No user at all    → show immediately (Next.js middleware redirects to /login)
 
 function SessionBootstrap({ children }: { children: React.ReactNode }) {
-  const user = useAuthStore((s) => s.user);
-  const accessToken = useAuthStore((s) => s.accessToken);
   const [ready, setReady] = useState(false);
 
+  // zustand's persist middleware reads the saved `user` from localStorage
+  // asynchronously, after this component's first render. If we make the
+  // ready/not-ready decision before that rehydration lands, `user` still
+  // reads as null, so we take the "no session" branch and mark the app
+  // ready immediately — permanently skipping the token refresh below and
+  // leaving accessToken null. Every request after that goes out with no
+  // Authorization header at all. Wait for hydration to actually finish
+  // before deciding anything.
+  //
+  // `useAuthStore.persist` only exists in the browser: its storage getter
+  // is `() => localStorage`, which throws during SSR (no `localStorage` in
+  // Node) — zustand swallows that and skips attaching `.persist` entirely.
+  // Treat "no persist API" as "nothing to wait for" rather than crashing.
+  const [hydrated, setHydrated] = useState(() => useAuthStore.persist?.hasHydrated() ?? true);
+
   useEffect(() => {
+    if (hydrated) return;
+    if (!useAuthStore.persist || useAuthStore.persist.hasHydrated()) {
+      setHydrated(true);
+      return;
+    }
+    return useAuthStore.persist.onFinishHydration(() => setHydrated(true));
+  }, [hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+
+    // Read imperatively via getState(), NOT the reactive useAuthStore(selector)
+    // hook. React's useSyncExternalStore deliberately returns the SSR-safe
+    // (null) snapshot on the render where `hydrated` first flips true, to
+    // avoid a hydration mismatch — so the reactive `user`/`accessToken`
+    // values still lag one render behind the real, just-hydrated store state
+    // at exactly the moment this effect needs them. getState() always reads
+    // the true current state and has no such lag.
+    const { user, accessToken } = useAuthStore.getState();
+
     // Already have a token in memory — schedule proactive refresh and show app
     if (accessToken) {
       // updateAccessToken schedules the background refresh timer internally
@@ -60,7 +93,7 @@ function SessionBootstrap({ children }: { children: React.ReactNode }) {
       cancelled = true;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // intentionally runs once on mount
+  }, [hydrated]); // re-run once hydration completes; accessToken/user are stable by then
 
   if (!ready) {
     return (

@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useMutation } from '@tanstack/react-query';
 import api from '@/lib/axios';
 import { useAuthStore } from '@/store/authStore';
+import PasswordInput from '@/components/ui/PasswordInput';
 import type { ApiResponse, User, Store } from '@/types';
 
 interface RegisterResponse {
@@ -58,23 +59,38 @@ export default function RegisterPage() {
     label: string,
     type = 'text',
     placeholder = '',
-  ) => (
-    <div>
-      <label htmlFor={id} className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-        {label}
-      </label>
-      <input
-        id={id}
-        type={type}
-        required
-        autoComplete={id}
-        value={form[id]}
-        onChange={(e) => setForm((f) => ({ ...f, [id]: e.target.value }))}
-        placeholder={placeholder}
-        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-      />
-    </div>
-  );
+  ) => {
+    const inputClass = 'w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent';
+    return (
+      <div>
+        <label htmlFor={id} className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          {label}
+        </label>
+        {type === 'password' ? (
+          <PasswordInput
+            id={id}
+            required
+            autoComplete={id}
+            value={form[id]}
+            onChange={(e) => setForm((f) => ({ ...f, [id]: e.target.value }))}
+            placeholder={placeholder}
+            className={inputClass}
+          />
+        ) : (
+          <input
+            id={id}
+            type={type}
+            required
+            autoComplete={id}
+            value={form[id]}
+            onChange={(e) => setForm((f) => ({ ...f, [id]: e.target.value }))}
+            placeholder={placeholder}
+            className={inputClass}
+          />
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="w-full max-w-md bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-800 p-8">

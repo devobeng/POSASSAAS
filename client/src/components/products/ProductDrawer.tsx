@@ -9,6 +9,7 @@ import { useCreateProduct, useUpdateProduct } from '@/hooks/api/useProducts';
 import { useCategories, useCreateCategory } from '@/hooks/api/useCategories';
 import { useUiStore } from '@/store/uiStore';
 import api from '@/lib/axios';
+import { blockInvalidNumberKey } from '@/lib/numericInput';
 import type { ApiResponse, Product } from '@/types';
 import Image from 'next/image';
 
@@ -152,8 +153,9 @@ export default function ProductDrawer({ open, product, onClose }: Props) {
           // stays on that stale (imageless) snapshot until something else
           // happens to refetch it.
           qc.invalidateQueries({ queryKey: ['products'] });
-        } catch {
-          toast('Product saved but image upload failed', 'warning');
+        } catch (imgErr: unknown) {
+          const e = imgErr as { response?: { data?: { message?: string } } };
+          toast(e.response?.data?.message ?? 'Product saved but image upload failed', 'warning');
         }
       }
 
@@ -184,6 +186,7 @@ export default function ProductDrawer({ open, product, onClose }: Props) {
         required={required}
         value={form[key] as string}
         onChange={(e) => set(key, e.target.value)}
+        onKeyDown={type === 'number' ? blockInvalidNumberKey : undefined}
         placeholder={placeholder}
         className={inputClass}
       />

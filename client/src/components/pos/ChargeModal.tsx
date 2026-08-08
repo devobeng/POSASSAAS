@@ -8,6 +8,7 @@ import { useUiStore } from '@/store/uiStore';
 import { useConnectivityStore } from '@/store/connectivityStore';
 import { db, generateOfflineRef } from '@/lib/db';
 import api from '@/lib/axios';
+import { blockInvalidNumberKey } from '@/lib/numericInput';
 import type { Order, PaymentMethod } from '@/types';
 
 type ModalMethod = PaymentMethod | 'SPLIT';
@@ -343,6 +344,7 @@ export default function ChargeModal({ open, onClose, onSuccess }: Props) {
                       step="0.01"
                       value={cashTendered}
                       onChange={(e) => setCashTendered(e.target.value)}
+                      onKeyDown={blockInvalidNumberKey}
                       placeholder={fmt(total)}
                       autoFocus
                       className="w-full px-3 py-2.5 border border-gray-200 dark:border-gray-700 rounded-xl text-xl font-mono bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500"
@@ -420,6 +422,7 @@ export default function ChargeModal({ open, onClose, onSuccess }: Props) {
                         min="0"
                         step="0.01"
                         value={line.amount}
+                        onKeyDown={blockInvalidNumberKey}
                         onChange={(e) => {
                           const next = [...splitLines];
                           next[i] = { ...next[i], amount: e.target.value };
