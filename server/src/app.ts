@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import pinoHttp from 'pino-http';
 import rateLimit from 'express-rate-limit';
@@ -31,8 +32,15 @@ const app = express();
 // token-refresh retry flow and leaving React Query without data.
 app.set('etag', false);
 
+// Render (and Vercel/Heroku/most PaaS hosts) sit exactly one reverse-proxy
+// hop in front of this app — without this, express-rate-limit and any
+// req.ip-based logic see the proxy's IP for every request, collapsing all
+// traffic into a single rate-limit bucket instead of limiting per real client.
+app.set('trust proxy', 1);
+
 // ── Security headers ──────────────────────────────────────────────────────────
 app.use(helmet());
+app.use(compression());
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
 app.use(
@@ -66,9 +74,17 @@ app.use(
 );
 
 // ── Global rate limiter (generous — covers all /api routes) ──────────────────
+// Load-tested at 300 concurrent connections: the previous 300/min ceiling was
+// exhausted within the first second, then 429'd ~99% of legitimate traffic
+// for the rest of the window. Keyed per-IP, this also disproportionately
+// throttles multiple stores/cashiers sharing a NAT'd office IP. 2000/min
+// comfortably covers a busy multi-terminal store; a real DDoS is still
+// caught well below what this allows. Longer term this should key on the
+// authenticated user/store post-auth rather than raw IP — flagged as a
+// follow-up, not changed here since it touches auth-middleware ordering.
 const globalLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 300,
+  max: 2000,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many requests — please slow down' },

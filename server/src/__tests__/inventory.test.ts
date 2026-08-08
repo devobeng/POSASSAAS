@@ -42,7 +42,9 @@ jest.mock('../config/database', () => ({
       create: jest.fn(),
       findFirst: jest.fn(),
       findMany: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
       count: jest.fn(),
     },
     auditLog: { create: jest.fn() },
@@ -90,7 +92,9 @@ const { prisma } = require('../config/database') as {
       create: jest.Mock;
       findFirst: jest.Mock;
       findMany: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
       update: jest.Mock;
+      updateMany: jest.Mock;
       count: jest.Mock;
     };
     auditLog: { create: jest.Mock };
@@ -625,16 +629,18 @@ describe('POST /api/v1/inventory/adjustment-requests/:id/approve', () => {
   });
 
   it('STORE_ADMIN approving applies the stock change and marks APPROVED', async () => {
-    prisma.stockAdjustmentRequest.findFirst.mockResolvedValue({
+    // Atomic claim: updateMany({ status: PENDING }) succeeds (count: 1) only
+    // if nobody else has already reviewed this request.
+    prisma.stockAdjustmentRequest.updateMany.mockResolvedValue({ count: 1 });
+    prisma.stockAdjustmentRequest.findUniqueOrThrow.mockResolvedValue({
       id: 'req-1', storeId: STORE_ID, branchId: BRANCH_ID, productId: PRODUCT_ID,
-      quantity: 50, reason: 'RECOUNT', note: 'Big recount', status: 'PENDING', requestedById: 'mgr-id',
+      quantity: 50, reason: 'RECOUNT', note: 'Big recount', status: 'APPROVED', requestedById: 'mgr-id',
     });
     prisma.branch.findFirst.mockResolvedValue({ id: BRANCH_ID });
     prisma.product.findFirst.mockResolvedValue({ id: PRODUCT_ID });
     prisma.inventoryItem.upsert.mockResolvedValue({ id: 'inv-1', quantity: 0 });
     prisma.inventoryItem.update.mockResolvedValue({ id: 'inv-1', quantity: 50 });
     prisma.stockMovement.create.mockResolvedValue({ id: 'mv-1' });
-    prisma.stockAdjustmentRequest.update.mockResolvedValue({ id: 'req-1', status: 'APPROVED' });
     prisma.auditLog.create.mockResolvedValue({});
 
     const res = await request(app)
@@ -644,8 +650,11 @@ describe('POST /api/v1/inventory/adjustment-requests/:id/approve', () => {
 
     expect(res.status).toBe(200);
     expect(prisma.inventoryItem.update).toHaveBeenCalled();
-    expect(prisma.stockAdjustmentRequest.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ status: 'APPROVED' }) }),
+    expect(prisma.stockAdjustmentRequest.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: 'PENDING' }),
+        data: expect.objectContaining({ status: 'APPROVED' }),
+      }),
     );
   });
 
@@ -659,6 +668,8 @@ describe('POST /api/v1/inventory/adjustment-requests/:id/approve', () => {
   });
 
   it('approving an already-reviewed request → 409', async () => {
+    // Claim fails (count: 0) — someone already flipped it out of PENDING.
+    prisma.stockAdjustmentRequest.updateMany.mockResolvedValue({ count: 0 });
     prisma.stockAdjustmentRequest.findFirst.mockResolvedValue({
       id: 'req-1', storeId: STORE_ID, status: 'APPROVED',
     });
@@ -672,6 +683,7 @@ describe('POST /api/v1/inventory/adjustment-requests/:id/approve', () => {
   });
 
   it('approving a request that does not exist → 404', async () => {
+    prisma.stockAdjustmentRequest.updateMany.mockResolvedValue({ count: 0 });
     prisma.stockAdjustmentRequest.findFirst.mockResolvedValue(null);
 
     const res = await request(app)
@@ -687,10 +699,10 @@ describe('POST /api/v1/inventory/adjustment-requests/:id/reject', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it('STORE_ADMIN rejecting marks REJECTED without touching stock', async () => {
-    prisma.stockAdjustmentRequest.findFirst.mockResolvedValue({
-      id: 'req-1', storeId: STORE_ID, status: 'PENDING',
+    prisma.stockAdjustmentRequest.updateMany.mockResolvedValue({ count: 1 });
+    prisma.stockAdjustmentRequest.findUniqueOrThrow.mockResolvedValue({
+      id: 'req-1', storeId: STORE_ID, status: 'REJECTED',
     });
-    prisma.stockAdjustmentRequest.update.mockResolvedValue({ id: 'req-1', status: 'REJECTED' });
     prisma.auditLog.create.mockResolvedValue({});
 
     const res = await request(app)
@@ -701,8 +713,11 @@ describe('POST /api/v1/inventory/adjustment-requests/:id/reject', () => {
     expect(res.status).toBe(200);
     expect(prisma.inventoryItem.update).not.toHaveBeenCalled();
     expect(prisma.stockMovement.create).not.toHaveBeenCalled();
-    expect(prisma.stockAdjustmentRequest.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ status: 'REJECTED' }) }),
+    expect(prisma.stockAdjustmentRequest.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: 'PENDING' }),
+        data: expect.objectContaining({ status: 'REJECTED' }),
+      }),
     );
   });
 

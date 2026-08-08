@@ -29,6 +29,7 @@ jest.mock('../config/database', () => ({
     store: { findUniqueOrThrow: jest.fn() },
     auditLog: { create: jest.fn() },
     $transaction: jest.fn(),
+    $queryRaw: jest.fn(),
   },
 }));
 
@@ -49,6 +50,7 @@ const { prisma } = require('../config/database') as {
     store: { findUniqueOrThrow: jest.Mock };
     auditLog: { create: jest.Mock };
     $transaction: jest.Mock;
+    $queryRaw: jest.Mock;
   };
 };
 
@@ -141,6 +143,7 @@ function setupOrderMocks(opts: { hasStock?: boolean; stockDiscrepancy?: boolean 
   });
   prisma.product.findMany.mockResolvedValue([mockProduct]);
   prisma.order.count.mockResolvedValue(0);
+  prisma.$queryRaw.mockResolvedValue([{ nextOrderSeq: 1 }]);
   prisma.branch.findUnique.mockResolvedValue({ name: 'Branch 1' });
   prisma.inventoryItem.findMany.mockResolvedValue([
     { id: 'inv-1', productId: PRODUCT_ID, quantity: 100 },

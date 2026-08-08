@@ -118,13 +118,20 @@ export async function createOrder(
   }
 
   // ── 6. Generate order number ─────────────────────────────────────────────────
+  // Atomic UPDATE...RETURNING on Branch.nextOrderSeq — NOT count()-then-increment.
+  // Two cashiers checking out at the same branch within the same millisecond
+  // would both read the same count and collide on the unique orderNumber index,
+  // failing one of their (legitimate, in-stock) sales outright. The DB row lock
+  // on this single-row UPDATE serializes concurrent callers correctly.
   const prefix = branch.name
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, '')
     .slice(0, 3)
     .padEnd(3, 'X');
-  const orderCount = await prisma.order.count({ where: { branchId } });
-  const orderNumber = `${prefix}-${String(orderCount + 1).padStart(6, '0')}`;
+  const [{ nextOrderSeq }] = await prisma.$queryRaw<{ nextOrderSeq: number }[]>`
+    UPDATE branches SET "nextOrderSeq" = "nextOrderSeq" + 1 WHERE id = ${branchId} RETURNING "nextOrderSeq"
+  `;
+  const orderNumber = `${prefix}-${String(nextOrderSeq).padStart(6, '0')}`;
 
   const hasPaystack = payments.some((p) => p.method === 'PAYSTACK');
   const orderStatus: OrderStatus = hasPaystack ? OrderStatus.PENDING : OrderStatus.COMPLETED;
@@ -206,34 +213,66 @@ export async function createOrder(
     .filter((d): d is NonNullable<typeof d> => d !== null);
 
   // ── 9. Create order (single atomic Prisma write) ─────────────────────────────
-  const order = await prisma.order.create({
-    data: {
-      orderNumber,
-      storeId,
-      branchId,
-      cashierId,
-      status: orderStatus,
-      subtotal: new Prisma.Decimal(subtotal),
-      taxTotal: new Prisma.Decimal(taxTotal),
-      discountTotal: new Prisma.Decimal(discountAmount),
-      grandTotal: new Prisma.Decimal(grandTotal),
-      ...(clientOrderId && { clientOrderId }),
-      ...(createdAtClient && { createdAtClient: new Date(createdAtClient) }),
-      ...(offlineReference && { offlineReference }),
-      stockDiscrepancy,
-      items: { createMany: { data: lineItems } },
-      payments: {
-        createMany: {
-          data: payments.map((p) => ({
-            method: p.method,
-            amount: new Prisma.Decimal(p.amount),
-            status: p.method === 'PAYSTACK' ? PaymentStatus.PENDING : PaymentStatus.SUCCESS,
-          })),
+  let order: OrderWithDetails;
+  try {
+    order = await prisma.order.create({
+      data: {
+        orderNumber,
+        storeId,
+        branchId,
+        cashierId,
+        status: orderStatus,
+        subtotal: new Prisma.Decimal(subtotal),
+        taxTotal: new Prisma.Decimal(taxTotal),
+        discountTotal: new Prisma.Decimal(discountAmount),
+        grandTotal: new Prisma.Decimal(grandTotal),
+        ...(clientOrderId && { clientOrderId }),
+        ...(createdAtClient && { createdAtClient: new Date(createdAtClient) }),
+        ...(offlineReference && { offlineReference }),
+        stockDiscrepancy,
+        items: { createMany: { data: lineItems } },
+        payments: {
+          createMany: {
+            data: payments.map((p) => ({
+              method: p.method,
+              amount: new Prisma.Decimal(p.amount),
+              status: p.method === 'PAYSTACK' ? PaymentStatus.PENDING : PaymentStatus.SUCCESS,
+            })),
+          },
         },
       },
-    },
-    include: { items: true, payments: true },
-  });
+      include: { items: true, payments: true },
+    });
+  } catch (err) {
+    // Lost the idempotency race: another request with the same clientOrderId
+    // committed its order between our findFirst check (step 0) and this
+    // insert — the (storeId, clientOrderId) unique constraint rejects us with
+    // P2002. We already decremented stock above as if our order would win;
+    // since it didn't, restore it, then hand back the winner's order.
+    if (
+      clientOrderId &&
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === 'P2002'
+    ) {
+      await prisma
+        .$transaction(
+          items.map((item) =>
+            prisma.inventoryItem.updateMany({
+              where: { productId: item.productId, branchId },
+              data: { quantity: { increment: item.quantity } },
+            }),
+          ),
+        )
+        .catch(() => {});
+
+      const existing = await prisma.order.findFirst({
+        where: { storeId, clientOrderId },
+        include: { items: true, payments: true },
+      });
+      if (existing) return { order: existing, duplicate: true };
+    }
+    throw err;
+  }
 
   // ── 10. Stock movements (supplementary audit; best-effort) ───────────────────
   if (movementData.length > 0) {

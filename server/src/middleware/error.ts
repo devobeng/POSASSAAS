@@ -76,6 +76,14 @@ export function errorHandler(
       res.status(503).json({ success: false, message: 'Transaction conflict — please retry' });
       return;
     }
+    if (err.code === 'P2024') {
+      // Pool exhausted under a request burst (e.g. many cashiers checking out
+      // at the same branch in the same instant). Not a bug — a capacity
+      // signal. 503 tells the client to retry instead of surfacing a raw 500.
+      logger.warn('Prisma connection pool timeout — consider raising connection_limit or scaling out', err);
+      res.status(503).json({ success: false, message: 'Server is busy — please try again' });
+      return;
+    }
     if (err.code === 'P2028') {
       // Interactive transaction lost its connection (PgBouncer transaction-mode).
       // Fix: use session-mode pooler (port 5432) in DATABASE_URL.

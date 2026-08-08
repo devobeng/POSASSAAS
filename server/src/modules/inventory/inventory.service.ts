@@ -254,28 +254,38 @@ export async function reviewAdjustmentRequest(params: {
   reviewerId: string;
 }) {
   const { storeId, requestId, action, reviewNote, reviewerId } = params;
+  const newStatus =
+    action === 'APPROVE' ? StockAdjustmentRequestStatus.APPROVED : StockAdjustmentRequestStatus.REJECTED;
 
-  const request = await prisma.stockAdjustmentRequest.findFirst({
-    where: { id: requestId, storeId },
+  // Atomically claim the request by flipping it out of PENDING in the same
+  // guarded write — the `status: PENDING` WHERE clause means only one of two
+  // admins clicking Approve/Reject at the same instant can ever succeed here.
+  // Without this guard, both would pass a separate findFirst PENDING check,
+  // and an APPROVE would call adjustStock() twice — double-applying the
+  // quantity change — before either update landed. Same class of bug as the
+  // inventory quantity guard, just missed on this path originally.
+  const claim = await prisma.stockAdjustmentRequest.updateMany({
+    where: { id: requestId, storeId, status: StockAdjustmentRequestStatus.PENDING },
+    data: { status: newStatus, reviewedById: reviewerId, reviewNote },
   });
-  if (!request) throw new AppError('Adjustment request not found', 404);
-  if (request.status !== StockAdjustmentRequestStatus.PENDING) {
+
+  if (claim.count === 0) {
+    const existing = await prisma.stockAdjustmentRequest.findFirst({ where: { id: requestId, storeId } });
+    if (!existing) throw new AppError('Adjustment request not found', 404);
     throw new AppError('This request has already been reviewed', 409);
   }
 
+  const request = await prisma.stockAdjustmentRequest.findUniqueOrThrow({ where: { id: requestId } });
+
   if (action === 'REJECT') {
-    const updated = await prisma.stockAdjustmentRequest.update({
-      where: { id: requestId },
-      data: { status: StockAdjustmentRequestStatus.REJECTED, reviewedById: reviewerId, reviewNote },
-    });
     await auditLog({
       storeId, userId: reviewerId, action: 'REJECT',
       entity: 'StockAdjustmentRequest', entityId: requestId, metadata: { reviewNote },
     });
-    return { request: updated };
+    return { request };
   }
 
-  // Approve — perform the actual stock mutation now, then mark approved.
+  // We've exclusively claimed this request — safe to apply the stock mutation now.
   const result = await adjustStock({
     storeId,
     branchId: request.branchId,
@@ -286,17 +296,12 @@ export async function reviewAdjustmentRequest(params: {
     userId: request.requestedById,
   });
 
-  const updated = await prisma.stockAdjustmentRequest.update({
-    where: { id: requestId },
-    data: { status: StockAdjustmentRequestStatus.APPROVED, reviewedById: reviewerId, reviewNote },
-  });
-
   await auditLog({
     storeId, userId: reviewerId, action: 'APPROVE',
     entity: 'StockAdjustmentRequest', entityId: requestId, metadata: { reviewNote },
   });
 
-  return { request: updated, ...result };
+  return { request, ...result };
 }
 
 // ─── Stock transfer ───────────────────────────────────────────────────────────
@@ -463,6 +468,7 @@ export async function getLowStockItems(
       AND p."isActive" = true
       AND ii.quantity <= ii."lowStockThreshold"
     ORDER BY ii.quantity ASC, p.name ASC
+    LIMIT 500
   `;
 }
 
@@ -482,6 +488,7 @@ export async function getDiscrepancies(storeId: string, branchId?: string) {
       branch: { select: { id: true, name: true } },
     },
     orderBy: { quantity: 'asc' },
+    take: 500,
   });
 
   const offlineOrders = await prisma.order.findMany({
@@ -503,6 +510,7 @@ export async function getDiscrepancies(storeId: string, branchId?: string) {
       },
     },
     orderBy: { createdAt: 'desc' },
+    take: 500,
   });
 
   return {

@@ -190,14 +190,18 @@ model ReceiptSettings {
 }
 
 model Branch {
-  id        String   @id @default(cuid())
-  storeId   String
-  name      String
-  address   String?
-  phone     String?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String   @id @default(cuid())
+  storeId       String
+  name          String
+  address       String?
+  phone         String?
+  isActive      Boolean  @default(true)
+  // Atomic counter for order numbering (BR1-000123). Incremented via a single
+  // raw `UPDATE ... RETURNING` per order — never read-then-write in app code,
+  // which would race under concurrent checkouts at the same branch.
+  nextOrderSeq  Int      @default(1)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   store          Store           @relation(fields: [storeId], references: [id], onDelete: Cascade)
   users          User[]

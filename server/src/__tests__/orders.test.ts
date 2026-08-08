@@ -26,6 +26,7 @@ jest.mock('../config/database', () => ({
     branch: { findUnique: jest.fn(), findFirst: jest.fn() },
     auditLog: { create: jest.fn() },
     $transaction: jest.fn(),
+    $queryRaw: jest.fn(),
   },
 }));
 
@@ -51,6 +52,7 @@ const { prisma } = require('../config/database') as {
     branch: { findUnique: jest.Mock; findFirst: jest.Mock };
     auditLog: { create: jest.Mock };
     $transaction: jest.Mock;
+    $queryRaw: jest.Mock;
   };
 };
 
@@ -158,6 +160,8 @@ describe('POST /api/v1/orders', () => {
       { id: 'inv-1', productId: PRODUCT_ID, quantity: 100 },
     ]);
     prisma.order.findFirst.mockResolvedValue(null);
+    // Order-number generation: atomic UPDATE branches...RETURNING "nextOrderSeq".
+    prisma.$queryRaw.mockResolvedValue([{ nextOrderSeq: 1 }]);
   });
 
   it('creates an order successfully → 201', async () => {
