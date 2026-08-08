@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Store as StoreIcon } from 'lucide-react';
 import { useStore, useUpdateStore, useUploadLogo } from '@/hooks/api/useStore';
 import { useUiStore } from '@/store/uiStore';
+import { useAuthStore } from '@/store/authStore';
 import Image from 'next/image';
 
 function trialDaysLeft(trialEndsAt: string | null | undefined): number | null {
@@ -15,18 +16,23 @@ function trialDaysLeft(trialEndsAt: string | null | undefined): number | null {
 
 export default function SettingsPage() {
   const toast = useUiStore((s) => s.toast);
+  const user = useAuthStore((s) => s.user);
   const { data: store, isLoading } = useStore();
   const { mutateAsync: updateStore, isPending: saving } = useUpdateStore();
   const { mutateAsync: uploadLogo, isPending: uploading } = useUploadLogo();
 
-  const [form, setForm] = useState({ name: '', currency: '' });
+  const [form, setForm] = useState({ name: '', currency: '', stockAdjustmentThreshold: '20' });
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (store) {
-      setForm({ name: store.name, currency: store.currency ?? 'GHS' });
+      setForm({
+        name: store.name,
+        currency: store.currency ?? 'GHS',
+        stockAdjustmentThreshold: String(store.stockAdjustmentThreshold ?? 20),
+      });
       setLogoPreview(store.logoUrl ?? null);
     }
   }, [store]);
@@ -41,7 +47,14 @@ export default function SettingsPage() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await updateStore({ name: form.name, currency: form.currency });
+      const payload: Parameters<typeof updateStore>[0] = { name: form.name, currency: form.currency };
+      if (user?.role === 'STORE_ADMIN') {
+        const threshold = parseInt(form.stockAdjustmentThreshold, 10);
+        if (Number.isFinite(threshold) && threshold > 0) {
+          payload.stockAdjustmentThreshold = threshold;
+        }
+      }
+      await updateStore(payload);
       if (logoFile) {
         await uploadLogo(logoFile);
         setLogoFile(null);
@@ -100,6 +113,28 @@ export default function SettingsPage() {
               </select>
             </div>
           </div>
+
+          {/* Anti-theft: stock adjustment approval threshold */}
+          {user?.role === 'STORE_ADMIN' && (
+            <div className="space-y-4">
+              <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Stock adjustment approval</h2>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  Branch manager approval threshold
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  value={form.stockAdjustmentThreshold}
+                  onChange={(e) => setForm((f) => ({ ...f, stockAdjustmentThreshold: e.target.value }))}
+                  className={inputClass}
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Branch managers can adjust stock freely up to this quantity. Adjustments above it are sent to you for approval before they take effect.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Subscription info */}
           {store && (

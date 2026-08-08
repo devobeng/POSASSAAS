@@ -9,6 +9,9 @@ import {
   inventoryQuerySchema,
   movementsQuerySchema,
   lowStockQuerySchema,
+  listAdjustmentRequestsQuerySchema,
+  reviewAdjustmentRequestSchema,
+  rejectAdjustmentRequestSchema,
 } from './inventory.schema';
 import * as inventoryController from './inventory.controller';
 
@@ -55,3 +58,27 @@ inventoryRouter.get(
 );
 
 inventoryRouter.get('/discrepancies', inventoryController.getDiscrepancies);
+
+// ─── Adjustment approval workflow ─────────────────────────────────────────────
+// BRANCH_MANAGER can list (their own, per service scoping) but not review —
+// approving/rejecting your own request would defeat the point of the gate.
+
+inventoryRouter.get(
+  '/adjustment-requests',
+  validate(listAdjustmentRequestsQuerySchema, 'query'),
+  inventoryController.listAdjustmentRequests,
+);
+
+inventoryRouter.post(
+  '/adjustment-requests/:id/approve',
+  authorize('STORE_ADMIN', 'SUPER_ADMIN'),
+  validate(reviewAdjustmentRequestSchema),
+  inventoryController.approveAdjustmentRequest,
+);
+
+inventoryRouter.post(
+  '/adjustment-requests/:id/reject',
+  authorize('STORE_ADMIN', 'SUPER_ADMIN'),
+  validate(rejectAdjustmentRequestSchema),
+  inventoryController.rejectAdjustmentRequest,
+);

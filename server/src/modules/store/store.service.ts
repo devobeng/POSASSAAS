@@ -28,6 +28,7 @@ export async function updateStore(storeId: string, data: UpdateStoreInput, actor
     select: {
       id: true, name: true, slug: true, currency: true,
       subscriptionStatus: true, logoUrl: true, updatedAt: true,
+      stockAdjustmentThreshold: true,
     },
   });
   await auditLog({

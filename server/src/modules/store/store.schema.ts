@@ -4,6 +4,9 @@ export const updateStoreSchema = z
   .object({
     name: z.string().min(2).max(100).optional(),
     currency: z.string().length(3).transform((v) => v.toUpperCase()).optional(),
+    // BRANCH_MANAGER adjustments with |quantity| over this go to STORE_ADMIN
+    // approval instead of applying immediately.
+    stockAdjustmentThreshold: z.number().int().positive().max(100000).optional(),
   })
   .strict();
 

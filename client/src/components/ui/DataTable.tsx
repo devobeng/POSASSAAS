@@ -23,6 +23,7 @@ interface Props<T> {
   emptyDescription?: string;
   headerActions?: React.ReactNode;
   onRowClick?: (row: T) => void;
+  rowClassName?: (row: T) => string;
 }
 
 export default function DataTable<T>({
@@ -39,6 +40,7 @@ export default function DataTable<T>({
   emptyDescription,
   headerActions,
   onRowClick,
+  rowClassName,
 }: Props<T>) {
   return (
     <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-100 dark:border-gray-800 overflow-hidden">
@@ -96,7 +98,7 @@ export default function DataTable<T>({
                 <tr
                   key={keyExtractor(row)}
                   onClick={() => onRowClick?.(row)}
-                  className={`border-b border-gray-50 dark:border-gray-800/50 hover:bg-gray-50/50 dark:hover:bg-gray-800/30 transition-colors ${onRowClick ? 'cursor-pointer' : ''}`}
+                  className={`border-b border-gray-50 dark:border-gray-800/50 hover:bg-gray-50/50 dark:hover:bg-gray-800/30 transition-colors ${onRowClick ? 'cursor-pointer' : ''} ${rowClassName?.(row) ?? ''}`}
                 >
                   {columns.map((col) => (
                     <td key={col.key} className={`px-4 py-3 text-gray-800 dark:text-gray-200 ${col.className ?? ''}`}>

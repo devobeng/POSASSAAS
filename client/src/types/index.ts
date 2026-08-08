@@ -71,6 +71,7 @@ export interface Store {
   subscriptionPlan?: SubscriptionPlan | null;
   subscriptionStatus: SubscriptionStatus;
   trialEndsAt?: string | null;
+  stockAdjustmentThreshold?: number;
   createdAt: string;
 }
 

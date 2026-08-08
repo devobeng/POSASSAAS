@@ -13,7 +13,7 @@ export function useStore() {
 export function useUpdateStore() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: Partial<Pick<Store, 'name' | 'currency'>>) =>
+    mutationFn: (data: Partial<Pick<Store, 'name' | 'currency' | 'stockAdjustmentThreshold'>>) =>
       api.patch<ApiResponse<Store>>('/store', data).then((r) => r.data.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['store'] }),
   });

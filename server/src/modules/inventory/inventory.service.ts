@@ -1,8 +1,12 @@
-import { Prisma, StockMovementType } from '@prisma/client';
+import { Prisma, StockMovementType, AdjustmentReason, StockAdjustmentRequestStatus } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { AppError } from '../../middleware/error';
 import { auditLog } from '../../utils/audit';
-import type { InventoryQuery, MovementsQuery } from './inventory.schema';
+import type {
+  InventoryQuery,
+  MovementsQuery,
+  ListAdjustmentRequestsQuery,
+} from './inventory.schema';
 
 // ─── Guards ───────────────────────────────────────────────────────────────────
 
@@ -103,10 +107,11 @@ export async function adjustStock(params: {
   branchId: string;
   productId: string;
   quantity: number;
+  reason: AdjustmentReason;
   note: string;
   userId: string;
 }) {
-  const { storeId, branchId, productId, quantity, note, userId } = params;
+  const { storeId, branchId, productId, quantity, reason, note, userId } = params;
 
   await assertBranchInStore(storeId, branchId);
   await assertProductInStore(storeId, productId);
@@ -145,12 +150,153 @@ export async function adjustStock(params: {
       inventoryItemId: baseItem.id,
       type: StockMovementType.ADJUSTMENT,
       quantity,
+      reason,
       note,
       userId,
     },
   });
 
   return { inventoryItem: updatedItem!, movement };
+}
+
+// ─── Stock adjustment — threshold gate + approval workflow ───────────────────
+// BRANCH_MANAGER adjustments whose |quantity| exceeds the store's configured
+// threshold are held for STORE_ADMIN review instead of applying immediately —
+// a large "correction" is exactly the kind of thing that should require a
+// second set of eyes. STORE_ADMIN/SUPER_ADMIN adjustments always apply
+// immediately regardless of size; they're already the approver.
+
+export async function requestOrApplyAdjustment(params: {
+  storeId: string;
+  branchId: string;
+  productId: string;
+  quantity: number;
+  reason: AdjustmentReason;
+  note: string;
+  userId: string;
+  role: string;
+}): Promise<
+  | { pending: true; request: { id: string; quantity: number; reason: AdjustmentReason; note: string } }
+  | { pending: false; inventoryItem: unknown; movement: unknown }
+> {
+  const { storeId, branchId, productId, quantity, reason, note, userId, role } = params;
+
+  if (role === 'BRANCH_MANAGER') {
+    const store = await prisma.store.findUnique({
+      where: { id: storeId },
+      select: { stockAdjustmentThreshold: true },
+    });
+    const threshold = store?.stockAdjustmentThreshold ?? 20;
+
+    if (Math.abs(quantity) > threshold) {
+      await assertBranchInStore(storeId, branchId);
+      await assertProductInStore(storeId, productId);
+
+      const request = await prisma.stockAdjustmentRequest.create({
+        data: { storeId, branchId, productId, quantity, reason, note, requestedById: userId },
+      });
+
+      await auditLog({
+        storeId,
+        userId,
+        action: 'REQUEST',
+        entity: 'StockAdjustmentRequest',
+        entityId: request.id,
+        metadata: { productId, branchId, quantity, reason },
+      });
+
+      return { pending: true, request };
+    }
+  }
+
+  const result = await adjustStock({ storeId, branchId, productId, quantity, reason, note, userId });
+  return { pending: false, ...result };
+}
+
+export async function listAdjustmentRequests(
+  storeId: string,
+  role: string,
+  userBranchId: string | undefined,
+  query: ListAdjustmentRequestsQuery,
+) {
+  const { status, page, limit } = query;
+
+  const where: Prisma.StockAdjustmentRequestWhereInput = {
+    storeId,
+    ...(role === 'BRANCH_MANAGER' && { branchId: userBranchId }),
+    ...(status && { status: status as StockAdjustmentRequestStatus }),
+  };
+
+  const [requests, total] = await Promise.all([
+    prisma.stockAdjustmentRequest.findMany({
+      where,
+      include: {
+        product: { select: { id: true, name: true, sku: true } },
+        branch: { select: { id: true, name: true } },
+        requestedBy: { select: { id: true, name: true } },
+        reviewedBy: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.stockAdjustmentRequest.count({ where }),
+  ]);
+
+  return { requests, total, page, limit, totalPages: Math.ceil(total / limit) };
+}
+
+export async function reviewAdjustmentRequest(params: {
+  storeId: string;
+  requestId: string;
+  action: 'APPROVE' | 'REJECT';
+  reviewNote: string | undefined;
+  reviewerId: string;
+}) {
+  const { storeId, requestId, action, reviewNote, reviewerId } = params;
+
+  const request = await prisma.stockAdjustmentRequest.findFirst({
+    where: { id: requestId, storeId },
+  });
+  if (!request) throw new AppError('Adjustment request not found', 404);
+  if (request.status !== StockAdjustmentRequestStatus.PENDING) {
+    throw new AppError('This request has already been reviewed', 409);
+  }
+
+  if (action === 'REJECT') {
+    const updated = await prisma.stockAdjustmentRequest.update({
+      where: { id: requestId },
+      data: { status: StockAdjustmentRequestStatus.REJECTED, reviewedById: reviewerId, reviewNote },
+    });
+    await auditLog({
+      storeId, userId: reviewerId, action: 'REJECT',
+      entity: 'StockAdjustmentRequest', entityId: requestId, metadata: { reviewNote },
+    });
+    return { request: updated };
+  }
+
+  // Approve — perform the actual stock mutation now, then mark approved.
+  const result = await adjustStock({
+    storeId,
+    branchId: request.branchId,
+    productId: request.productId,
+    quantity: request.quantity,
+    reason: request.reason,
+    note: request.note,
+    userId: request.requestedById,
+  });
+
+  const updated = await prisma.stockAdjustmentRequest.update({
+    where: { id: requestId },
+    data: { status: StockAdjustmentRequestStatus.APPROVED, reviewedById: reviewerId, reviewNote },
+  });
+
+  await auditLog({
+    storeId, userId: reviewerId, action: 'APPROVE',
+    entity: 'StockAdjustmentRequest', entityId: requestId, metadata: { reviewNote },
+  });
+
+  return { request: updated, ...result };
 }
 
 // ─── Stock transfer ───────────────────────────────────────────────────────────

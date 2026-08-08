@@ -38,6 +38,13 @@ jest.mock('../config/database', () => ({
       findFirst: jest.fn(),
     },
     store: { findUnique: jest.fn() },
+    stockAdjustmentRequest: {
+      create: jest.fn(),
+      findFirst: jest.fn(),
+      findMany: jest.fn(),
+      update: jest.fn(),
+      count: jest.fn(),
+    },
     auditLog: { create: jest.fn() },
     $transaction: jest.fn(),
     $queryRaw: jest.fn(),
@@ -79,6 +86,13 @@ const { prisma } = require('../config/database') as {
     };
     branch: { findFirst: jest.Mock };
     store: { findUnique: jest.Mock };
+    stockAdjustmentRequest: {
+      create: jest.Mock;
+      findFirst: jest.Mock;
+      findMany: jest.Mock;
+      update: jest.Mock;
+      count: jest.Mock;
+    };
     auditLog: { create: jest.Mock };
     $transaction: jest.Mock;
     $queryRaw: jest.Mock;
@@ -402,7 +416,7 @@ describe('POST /api/v1/inventory/adjust', () => {
     const res = await request(app)
       .post('/api/v1/inventory/adjust')
       .set('Authorization', `Bearer ${adminToken()}`)
-      .send({ branchId: BRANCH_ID, productId: PRODUCT_ID, quantity: 20, note: 'Receiving shipment' });
+      .send({ branchId: BRANCH_ID, productId: PRODUCT_ID, quantity: 20, reason: 'RECOUNT', note: 'Receiving shipment' });
 
     expect(res.status).toBe(200);
   });
@@ -419,7 +433,7 @@ describe('POST /api/v1/inventory/adjust', () => {
     const res = await request(app)
       .post('/api/v1/inventory/adjust')
       .set('Authorization', `Bearer ${managerToken()}`)
-      .send({ productId: PRODUCT_ID, quantity: 5, note: 'Adjustment test' });
+      .send({ productId: PRODUCT_ID, quantity: 5, reason: 'RECOUNT', note: 'Adjustment test' });
 
     expect(res.status).toBe(200);
     // The service should have been given the manager's token branchId, not anything from the body
@@ -438,7 +452,7 @@ describe('POST /api/v1/inventory/adjust', () => {
     const res = await request(app)
       .post('/api/v1/inventory/adjust')
       .set('Authorization', `Bearer ${adminToken()}`)
-      .send({ branchId: BRANCH_ID, productId: PRODUCT_ID, quantity: -10, note: 'Correction' });
+      .send({ branchId: BRANCH_ID, productId: PRODUCT_ID, quantity: -10, reason: 'RECOUNT', note: 'Correction' });
 
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/insufficient stock/i);
@@ -455,7 +469,7 @@ describe('POST /api/v1/inventory/adjust', () => {
     const res = await request(app)
       .post('/api/v1/inventory/adjust')
       .set('Authorization', `Bearer ${adminToken()}`)
-      .send({ branchId: BRANCH_ID, productId: PRODUCT_ID, quantity: 50, note: 'Stock count' });
+      .send({ branchId: BRANCH_ID, productId: PRODUCT_ID, quantity: 50, reason: 'RECOUNT', note: 'Stock count' });
 
     expect(res.status).toBe(200);
     // updateMany should NOT have been called for a positive adjustment
@@ -479,6 +493,235 @@ describe('POST /api/v1/inventory/adjust', () => {
       .send({ branchId: BRANCH_ID, productId: PRODUCT_ID, quantity: 5 });
 
     expect(res.status).toBe(422);
+  });
+
+  it('rejects an invalid reason value → 422', async () => {
+    const res = await request(app)
+      .post('/api/v1/inventory/adjust')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ branchId: BRANCH_ID, productId: PRODUCT_ID, quantity: 5, reason: 'NOT_A_REASON', note: 'Test' });
+
+    expect(res.status).toBe(422);
+  });
+});
+
+// ─── STOCK ADJUSTMENT — THRESHOLD / APPROVAL WORKFLOW ────────────────────────
+
+describe('POST /api/v1/inventory/adjust — approval threshold', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    prisma.$transaction.mockImplementation((arg: unknown) => {
+      if (typeof arg === 'function') return (arg as (tx: typeof prisma) => unknown)(prisma);
+      return Promise.all(arg as Promise<unknown>[]);
+    });
+  });
+
+  it('BRANCH_MANAGER adjustment exceeding the store threshold is held for review, not applied', async () => {
+    prisma.store.findUnique.mockResolvedValue({ stockAdjustmentThreshold: 20 });
+    prisma.branch.findFirst.mockResolvedValue({ id: BRANCH_ID });
+    prisma.product.findFirst.mockResolvedValue({ id: PRODUCT_ID });
+    prisma.stockAdjustmentRequest.create.mockResolvedValue({
+      id: 'req-1', quantity: 50, reason: 'RECOUNT', note: 'Big recount',
+    });
+    prisma.auditLog.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post('/api/v1/inventory/adjust')
+      .set('Authorization', `Bearer ${managerToken()}`)
+      .send({ productId: PRODUCT_ID, quantity: 50, reason: 'RECOUNT', note: 'Big recount' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.pending).toBe(true);
+    expect(res.body.message).toMatch(/sent to your store admin/i);
+    expect(prisma.stockAdjustmentRequest.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ quantity: 50, storeId: STORE_ID, branchId: BRANCH_ID }) }),
+    );
+    // Stock must NOT have been touched yet — only applies on approval
+    expect(prisma.inventoryItem.update).not.toHaveBeenCalled();
+    expect(prisma.inventoryItem.updateMany).not.toHaveBeenCalled();
+    expect(prisma.stockMovement.create).not.toHaveBeenCalled();
+  });
+
+  it('BRANCH_MANAGER adjustment within the threshold applies immediately', async () => {
+    prisma.store.findUnique.mockResolvedValue({ stockAdjustmentThreshold: 20 });
+    prisma.branch.findFirst.mockResolvedValue({ id: BRANCH_ID });
+    prisma.product.findFirst.mockResolvedValue({ id: PRODUCT_ID });
+    prisma.inventoryItem.upsert.mockResolvedValue({ id: 'inv-1', quantity: 0 });
+    prisma.inventoryItem.update.mockResolvedValue({ id: 'inv-1', quantity: 10 });
+    prisma.stockMovement.create.mockResolvedValue({ id: 'mv-1' });
+    prisma.auditLog.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post('/api/v1/inventory/adjust')
+      .set('Authorization', `Bearer ${managerToken()}`)
+      .send({ productId: PRODUCT_ID, quantity: 10, reason: 'RECOUNT', note: 'Small recount' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.pending).toBe(false);
+    expect(prisma.stockAdjustmentRequest.create).not.toHaveBeenCalled();
+  });
+
+  it('STORE_ADMIN adjustment always applies immediately regardless of size', async () => {
+    prisma.branch.findFirst.mockResolvedValue({ id: BRANCH_ID });
+    prisma.product.findFirst.mockResolvedValue({ id: PRODUCT_ID });
+    prisma.inventoryItem.upsert.mockResolvedValue({ id: 'inv-1', quantity: 0 });
+    prisma.inventoryItem.update.mockResolvedValue({ id: 'inv-1', quantity: 500 });
+    prisma.stockMovement.create.mockResolvedValue({ id: 'mv-1' });
+    prisma.auditLog.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post('/api/v1/inventory/adjust')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ branchId: BRANCH_ID, productId: PRODUCT_ID, quantity: 500, reason: 'RECOUNT', note: 'Large restock' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.pending).toBe(false);
+    // STORE_ADMIN is never gated — the threshold lookup shouldn't even run
+    expect(prisma.store.findUnique).not.toHaveBeenCalled();
+    expect(prisma.stockAdjustmentRequest.create).not.toHaveBeenCalled();
+  });
+});
+
+// ─── ADJUSTMENT REQUEST REVIEW ────────────────────────────────────────────────
+
+describe('GET /api/v1/inventory/adjustment-requests', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('BRANCH_MANAGER sees only their own branch requests', async () => {
+    prisma.stockAdjustmentRequest.findMany.mockResolvedValue([]);
+    prisma.stockAdjustmentRequest.count.mockResolvedValue(0);
+
+    const res = await request(app)
+      .get('/api/v1/inventory/adjustment-requests')
+      .set('Authorization', `Bearer ${managerToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(prisma.stockAdjustmentRequest.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ branchId: BRANCH_ID }) }),
+    );
+  });
+
+  it('STORE_ADMIN sees all store requests, unfiltered by branch', async () => {
+    prisma.stockAdjustmentRequest.findMany.mockResolvedValue([]);
+    prisma.stockAdjustmentRequest.count.mockResolvedValue(0);
+
+    const res = await request(app)
+      .get('/api/v1/inventory/adjustment-requests')
+      .set('Authorization', `Bearer ${adminToken()}`);
+
+    expect(res.status).toBe(200);
+    const whereArg = prisma.stockAdjustmentRequest.findMany.mock.calls[0][0].where;
+    expect(whereArg.branchId).toBeUndefined();
+  });
+});
+
+describe('POST /api/v1/inventory/adjustment-requests/:id/approve', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    prisma.$transaction.mockImplementation((arg: unknown) => {
+      if (typeof arg === 'function') return (arg as (tx: typeof prisma) => unknown)(prisma);
+      return Promise.all(arg as Promise<unknown>[]);
+    });
+  });
+
+  it('STORE_ADMIN approving applies the stock change and marks APPROVED', async () => {
+    prisma.stockAdjustmentRequest.findFirst.mockResolvedValue({
+      id: 'req-1', storeId: STORE_ID, branchId: BRANCH_ID, productId: PRODUCT_ID,
+      quantity: 50, reason: 'RECOUNT', note: 'Big recount', status: 'PENDING', requestedById: 'mgr-id',
+    });
+    prisma.branch.findFirst.mockResolvedValue({ id: BRANCH_ID });
+    prisma.product.findFirst.mockResolvedValue({ id: PRODUCT_ID });
+    prisma.inventoryItem.upsert.mockResolvedValue({ id: 'inv-1', quantity: 0 });
+    prisma.inventoryItem.update.mockResolvedValue({ id: 'inv-1', quantity: 50 });
+    prisma.stockMovement.create.mockResolvedValue({ id: 'mv-1' });
+    prisma.stockAdjustmentRequest.update.mockResolvedValue({ id: 'req-1', status: 'APPROVED' });
+    prisma.auditLog.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post('/api/v1/inventory/adjustment-requests/req-1/approve')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(prisma.inventoryItem.update).toHaveBeenCalled();
+    expect(prisma.stockAdjustmentRequest.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'APPROVED' }) }),
+    );
+  });
+
+  it('BRANCH_MANAGER cannot approve → 403', async () => {
+    const res = await request(app)
+      .post('/api/v1/inventory/adjustment-requests/req-1/approve')
+      .set('Authorization', `Bearer ${managerToken()}`)
+      .send({});
+
+    expect(res.status).toBe(403);
+  });
+
+  it('approving an already-reviewed request → 409', async () => {
+    prisma.stockAdjustmentRequest.findFirst.mockResolvedValue({
+      id: 'req-1', storeId: STORE_ID, status: 'APPROVED',
+    });
+
+    const res = await request(app)
+      .post('/api/v1/inventory/adjustment-requests/req-1/approve')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({});
+
+    expect(res.status).toBe(409);
+  });
+
+  it('approving a request that does not exist → 404', async () => {
+    prisma.stockAdjustmentRequest.findFirst.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post('/api/v1/inventory/adjustment-requests/does-not-exist/approve')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({});
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('POST /api/v1/inventory/adjustment-requests/:id/reject', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('STORE_ADMIN rejecting marks REJECTED without touching stock', async () => {
+    prisma.stockAdjustmentRequest.findFirst.mockResolvedValue({
+      id: 'req-1', storeId: STORE_ID, status: 'PENDING',
+    });
+    prisma.stockAdjustmentRequest.update.mockResolvedValue({ id: 'req-1', status: 'REJECTED' });
+    prisma.auditLog.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post('/api/v1/inventory/adjustment-requests/req-1/reject')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ reviewNote: 'Numbers do not add up, recount manually' });
+
+    expect(res.status).toBe(200);
+    expect(prisma.inventoryItem.update).not.toHaveBeenCalled();
+    expect(prisma.stockMovement.create).not.toHaveBeenCalled();
+    expect(prisma.stockAdjustmentRequest.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'REJECTED' }) }),
+    );
+  });
+
+  it('rejects without a reviewNote → 422', async () => {
+    const res = await request(app)
+      .post('/api/v1/inventory/adjustment-requests/req-1/reject')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({});
+
+    expect(res.status).toBe(422);
+  });
+
+  it('BRANCH_MANAGER cannot reject → 403', async () => {
+    const res = await request(app)
+      .post('/api/v1/inventory/adjustment-requests/req-1/reject')
+      .set('Authorization', `Bearer ${managerToken()}`)
+      .send({ reviewNote: 'test' });
+
+    expect(res.status).toBe(403);
   });
 });
 
@@ -523,6 +766,7 @@ describe('Concurrent stock deductions — stock guard prevents negative inventor
             branchId: BRANCH_ID,
             productId: PRODUCT_ID,
             quantity: -10,
+            reason: 'RECOUNT',
             note: 'concurrent deduction',
           }),
       ),
@@ -554,6 +798,7 @@ describe('Concurrent stock deductions — stock guard prevents negative inventor
         branchId: BRANCH_ID,
         productId: PRODUCT_ID,
         quantity: -1,
+        reason: 'RECOUNT',
         note: 'deduct from empty',
       });
 

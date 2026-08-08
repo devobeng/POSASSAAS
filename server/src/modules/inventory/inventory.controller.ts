@@ -8,6 +8,9 @@ import type {
   TransferStockInput,
   InventoryQuery,
   MovementsQuery,
+  ListAdjustmentRequestsQuery,
+  ReviewAdjustmentRequestInput,
+  RejectAdjustmentRequestInput,
 } from './inventory.schema';
 
 // ─── Branch-ID resolution ─────────────────────────────────────────────────────
@@ -53,25 +56,75 @@ export const adjustStock = asyncHandler(async (req: Request, res: Response) => {
   const body = req.body as AdjustStockInput;
   const branchId = resolveWriteBranchId(req, body.branchId);
 
-  const result = await inventoryService.adjustStock({
+  const result = await inventoryService.requestOrApplyAdjustment({
     storeId: req.storeId!,
     branchId,
     productId: body.productId,
     quantity: body.quantity,
+    reason: body.reason,
     note: body.note,
     userId: req.user!.sub,
+    role: req.user!.role,
   });
 
   await inventoryService.logInventoryAudit({
     storeId: req.storeId!,
     userId: req.user!.sub,
-    action: 'ADJUST',
+    action: result.pending ? 'ADJUST_REQUESTED' : 'ADJUST',
     productId: body.productId,
     branchId,
-    metadata: { quantity: body.quantity, note: body.note },
+    metadata: { quantity: body.quantity, reason: body.reason, note: body.note },
   });
 
-  sendSuccess(res, result, 'Stock adjusted');
+  sendSuccess(
+    res,
+    result,
+    result.pending
+      ? 'Adjustment exceeds your approval limit — sent to your store admin for review'
+      : 'Stock adjusted',
+  );
+});
+
+// ─── Adjustment approval workflow ─────────────────────────────────────────────
+
+export const listAdjustmentRequests = asyncHandler(async (req: Request, res: Response) => {
+  const { role, branchId } = req.user!;
+  const result = await inventoryService.listAdjustmentRequests(
+    req.storeId!,
+    role,
+    branchId,
+    req.query as unknown as ListAdjustmentRequestsQuery,
+  );
+  sendSuccess(res, result.requests, 'Success', 200, {
+    total: result.total,
+    page: result.page,
+    limit: result.limit,
+    totalPages: result.totalPages,
+  });
+});
+
+export const approveAdjustmentRequest = asyncHandler(async (req: Request, res: Response) => {
+  const { reviewNote } = req.body as ReviewAdjustmentRequestInput;
+  const result = await inventoryService.reviewAdjustmentRequest({
+    storeId: req.storeId!,
+    requestId: req.params.id,
+    action: 'APPROVE',
+    reviewNote,
+    reviewerId: req.user!.sub,
+  });
+  sendSuccess(res, result, 'Adjustment approved and applied');
+});
+
+export const rejectAdjustmentRequest = asyncHandler(async (req: Request, res: Response) => {
+  const { reviewNote } = req.body as RejectAdjustmentRequestInput;
+  const result = await inventoryService.reviewAdjustmentRequest({
+    storeId: req.storeId!,
+    requestId: req.params.id,
+    action: 'REJECT',
+    reviewNote,
+    reviewerId: req.user!.sub,
+  });
+  sendSuccess(res, result, 'Adjustment rejected');
 });
 
 // ─── Stock transfer ───────────────────────────────────────────────────────────
