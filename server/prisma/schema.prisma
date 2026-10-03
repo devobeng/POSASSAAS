@@ -20,9 +20,14 @@ enum Role {
 enum SubscriptionStatus {
   TRIAL
   ACTIVE
+  // A failed recurring charge — distinct from SUSPENDED so a later
+  // successful renewal charge can safely auto-recover it without ever
+  // touching a store an admin deliberately suspended.
   INACTIVE
   EXPIRED
   CANCELLED
+  // Platform-initiated (SUPER_ADMIN), never auto-recovered by billing events.
+  SUSPENDED
 }
 
 enum StockMovementType {
@@ -78,6 +83,12 @@ enum StockAdjustmentRequestStatus {
   PENDING
   APPROVED
   REJECTED
+}
+
+enum WebhookEventStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
 }
 
 // ─── Models ───────────────────────────────────────────────────────────────────
@@ -146,12 +157,22 @@ model Store {
   currency             String             @default("NGN")
   subscriptionStatus   SubscriptionStatus @default(TRIAL)
   trialEndsAt          DateTime?
-  paystackCustomerCode String?
-  subscriptionPlanId   String?
+  paystackCustomerCode     String?
+  // Captured off the subscription.create webhook — needed to disable/enable
+  // the store's recurring Paystack subscription later (plan switch, downgrade
+  // to free, or SUPER_ADMIN suspend/activate). Without these two, there is no
+  // way to stop Paystack from continuing to bill a cancelled/suspended store.
+  paystackSubscriptionCode String?
+  paystackEmailToken       String?
+  subscriptionPlanId       String?
   // BRANCH_MANAGER adjustments with |quantity| over this go to STORE_ADMIN
   // approval instead of applying immediately. STORE_ADMIN/SUPER_ADMIN
   // adjustments always apply immediately regardless of this value.
   stockAdjustmentThreshold Int      @default(20)
+  // IANA timezone (e.g. "Africa/Accra") used to bucket report date ranges
+  // and day/week/month groupings in local time instead of raw UTC/DB-session
+  // time, so a sale near local midnight lands in the right day's report.
+  timezone             String             @default("UTC")
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 
@@ -363,6 +384,11 @@ model Order {
   @@index([status])
   @@index([createdAt])
   @@index([storeId, createdAt])       // most common reporting query pattern
+  // Every report query (reports.service.ts) filters status='COMPLETED' AND
+  // storeId AND a createdAt range together — this composite serves that
+  // exact shape directly instead of scanning all statuses within the
+  // storeId+createdAt index above once order volume is large.
+  @@index([storeId, status, createdAt])
   @@index([branchId, status])
   @@index([stockDiscrepancy])         // discrepancy report query
   @@map("orders")
@@ -375,6 +401,12 @@ model OrderItem {
   productId   String?
   productName String
   unitPrice   Decimal @db.Decimal(12, 2)
+  // Snapshot of Product.costPrice at time of sale — profit/margin reports
+  // must use this, not today's live cost, or a later cost-price edit
+  // silently rewrites the recorded margin on every past order that sold it.
+  // Nullable only because existing rows predate this column; new rows always
+  // set it from the same product snapshot as unitPrice/productName.
+  costPrice   Decimal? @db.Decimal(12, 2)
   quantity    Int
   lineTotal   Decimal @db.Decimal(12, 2)
 
@@ -404,14 +436,24 @@ model Payment {
 }
 
 model SubscriptionPlan {
-  id          String   @id @default(cuid())
-  name        String   @unique
-  price       Decimal  @db.Decimal(12, 2)
-  maxBranches Int
-  maxUsers    Int
-  features    Json
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id               String   @id @default(cuid())
+  name             String   @unique
+  price            Decimal  @db.Decimal(12, 2)
+  maxBranches      Int
+  maxUsers         Int
+  features         Json
+  // Paystack recurring Plan code — created lazily on first paid subscribe
+  // (see subscribeToPlan) rather than at plan-creation time, so existing
+  // plans don't need a backfill migration. paystackPlanAmount records the
+  // amount (smallest currency unit) that code was created with, so a later
+  // price edit here can be detected and a fresh Paystack Plan created for
+  // it — Paystack Plans are treated as immutable once billed against, so a
+  // price change means a new Plan object, not silently repricing whoever
+  // is already subscribed to the old one.
+  paystackPlanCode   String?
+  paystackPlanAmount Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   stores Store[]
 
@@ -486,4 +528,26 @@ model Expense {
   @@index([categoryId])
   @@index([isRecurring, nextDueDate])
   @@map("expenses")
+}
+
+// Durable record of every inbound Paystack webhook, written BEFORE the
+// response is sent and BEFORE processing starts. Paystack only retries a
+// delivery that doesn't get a 200 — since the controller acks 200 up front
+// and processes async, a crash between the ack and processing finishing
+// would otherwise lose that event forever. This row is what a replay
+// sweeper uses to find and reprocess anything stuck at RECEIVED.
+model WebhookEvent {
+  id          String             @id @default(cuid())
+  provider    String             @default("paystack")
+  eventType   String
+  reference   String?
+  payload     Json
+  status      WebhookEventStatus @default(RECEIVED)
+  error       String?
+  receivedAt  DateTime           @default(now())
+  processedAt DateTime?
+
+  @@index([status, receivedAt])
+  @@index([reference])
+  @@map("webhook_events")
 }

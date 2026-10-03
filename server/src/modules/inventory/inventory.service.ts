@@ -10,7 +10,7 @@ import type {
 
 // ─── Guards ───────────────────────────────────────────────────────────────────
 
-async function assertBranchInStore(storeId: string, branchId: string): Promise<void> {
+export async function assertBranchInStore(storeId: string, branchId: string): Promise<void> {
   const branch = await prisma.branch.findFirst({
     where: { id: branchId, storeId, isActive: true },
     select: { id: true },

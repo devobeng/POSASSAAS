@@ -19,7 +19,7 @@ export const getStoresQuerySchema = z.object({
     .transform((v) => Math.min(100, Math.max(1, parseInt(v ?? '20', 10)))),
   search: z.string().optional(),
   status: z
-    .enum(['TRIAL', 'ACTIVE', 'INACTIVE', 'EXPIRED', 'CANCELLED'])
+    .enum(['TRIAL', 'ACTIVE', 'INACTIVE', 'EXPIRED', 'CANCELLED', 'SUSPENDED'])
     .optional(),
 });
 

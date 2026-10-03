@@ -3,7 +3,7 @@ import * as storeService from './store.service';
 import { sendSuccess } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { AppError } from '../../middleware/error';
-import type { UpdateStoreInput, ReceiptSettingsInput } from './store.schema';
+import type { UpdateStoreInput, ReceiptSettingsInput, CreateAuditEntryInput } from './store.schema';
 
 export const getStore = asyncHandler(async (req: Request, res: Response) => {
   const store = await storeService.getStore(req.storeId!);
@@ -44,9 +44,7 @@ export const updateReceiptSettings = asyncHandler(async (req: Request, res: Resp
 });
 
 export const createAuditEntry = asyncHandler(async (req: Request, res: Response) => {
-  const { action, entity, entityId, metadata } = req.body as {
-    action: string; entity: string; entityId: string; metadata?: Record<string, unknown>;
-  };
+  const { action, entity, entityId, metadata } = req.body as CreateAuditEntryInput;
   await storeService.createAuditEntry(
     req.storeId ?? null,
     req.user!.sub,

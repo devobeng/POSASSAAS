@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useBranches, useCreateBranch, useUpdateBranch, useDeleteBranch } from '@/hooks/api/useBranches';
 import { useUiStore } from '@/store/uiStore';
+import { getErrorMessage } from '@/lib/errors';
 import DataTable, { type Column } from '@/components/ui/DataTable';
 import Badge from '@/components/ui/Badge';
 import Drawer from '@/components/ui/Drawer';
@@ -18,7 +19,7 @@ function toForm(b: Branch): FormState {
 
 export default function BranchesPage() {
   const toast = useUiStore((s) => s.toast);
-  const { data: branches, isLoading } = useBranches();
+  const { data: branches, isLoading, isError, error, refetch } = useBranches();
   const { mutateAsync: createBranch, isPending: isCreating } = useCreateBranch();
 
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -47,8 +48,7 @@ export default function BranchesPage() {
       toast(isEditing ? 'Branch updated' : 'Branch created', 'success');
       setDrawerOpen(false);
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { message?: string } } };
-      toast(e.response?.data?.message ?? 'Failed to save branch', 'error');
+      toast(getErrorMessage(err, 'Failed to save branch'), 'error');
     }
   };
 
@@ -83,6 +83,9 @@ export default function BranchesPage() {
         columns={columns}
         data={branches ?? []}
         isLoading={isLoading}
+        isError={isError}
+        error={error}
+        onRetry={refetch}
         keyExtractor={(b) => b.id}
         emptyMessage="No branches yet"
         emptyDescription="Create your first branch to start taking orders"
@@ -135,7 +138,7 @@ export default function BranchesPage() {
         onConfirm={() =>
           doDelete(undefined, {
             onSuccess: () => { setDeleteId(null); toast('Branch deleted', 'success'); },
-            onError: () => toast('Failed to delete branch', 'error'),
+            onError: (err: unknown) => toast(getErrorMessage(err, 'Failed to delete branch'), 'error'),
           })
         }
       />

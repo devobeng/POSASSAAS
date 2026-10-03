@@ -2,6 +2,13 @@ import request from 'supertest';
 import crypto from 'crypto';
 import { app } from '../app';
 import { signAccessToken } from '../utils/jwt';
+import { __clearInMemoryCacheForTests } from '../utils/cache';
+
+// The subscription-status guard now caches its DB read in-process (see
+// middleware/subscription.ts). That cache is a module-level singleton, so
+// without this it leaks a status set by one test into a later test that
+// reuses the same STORE_ID and expects a different status.
+beforeEach(() => __clearInMemoryCacheForTests());
 
 // ─── Prisma mock ──────────────────────────────────────────────────────────────
 
@@ -10,6 +17,8 @@ jest.mock('../config/database', () => ({
     payment: {
       findUnique: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
+      create: jest.fn(),
     },
     order: {
       findUnique: jest.fn(),
@@ -19,12 +28,23 @@ jest.mock('../config/database', () => ({
       findUnique: jest.fn(),
       findFirst: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     subscriptionPlan: {
       findUnique: jest.fn(),
+      updateMany: jest.fn(),
     },
     user: {
       findUnique: jest.fn(),
+      count: jest.fn(),
+    },
+    branch: {
+      count: jest.fn(),
+    },
+    webhookEvent: {
+      create: jest.fn(),
+      update: jest.fn(),
+      findMany: jest.fn(),
     },
     auditLog: { create: jest.fn() },
     $transaction: jest.fn(),
@@ -37,17 +57,20 @@ jest.mock('../services/paystack.service', () => ({
   initializeTransaction: jest.fn(),
   verifyTransaction: jest.fn(),
   createCustomer: jest.fn(),
+  createPlan: jest.fn(),
   verifyWebhookSignature: jest.fn(),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { prisma } = require('../config/database') as {
   prisma: {
-    payment: { findUnique: jest.Mock; update: jest.Mock };
+    payment: { findUnique: jest.Mock; update: jest.Mock; updateMany: jest.Mock; create: jest.Mock };
     order: { findUnique: jest.Mock; update: jest.Mock };
-    store: { findUnique: jest.Mock; findFirst: jest.Mock; update: jest.Mock };
-    subscriptionPlan: { findUnique: jest.Mock };
-    user: { findUnique: jest.Mock };
+    store: { findUnique: jest.Mock; findFirst: jest.Mock; update: jest.Mock; updateMany: jest.Mock };
+    subscriptionPlan: { findUnique: jest.Mock; updateMany: jest.Mock };
+    user: { findUnique: jest.Mock; count: jest.Mock };
+    branch: { count: jest.Mock };
+    webhookEvent: { create: jest.Mock; update: jest.Mock; findMany: jest.Mock };
     auditLog: { create: jest.Mock };
     $transaction: jest.Mock;
   };
@@ -58,8 +81,15 @@ const paystackSvc = require('../services/paystack.service') as {
   initializeTransaction: jest.Mock;
   verifyTransaction: jest.Mock;
   createCustomer: jest.Mock;
+  createPlan: jest.Mock;
   verifyWebhookSignature: jest.Mock;
 };
+
+// Every webhook delivery is now persisted before being acked/processed —
+// give it a harmless default everywhere so tests that don't care about this
+// durability layer don't need to mock it individually.
+prisma.webhookEvent.create.mockResolvedValue({ id: 'webhook-event-1' });
+prisma.webhookEvent.update.mockResolvedValue({});
 
 // ─── Tokens ───────────────────────────────────────────────────────────────────
 
@@ -73,6 +103,15 @@ function cashierToken() {
     role: 'CASHIER',
     storeId: STORE_ID,
     branchId: 'branch-1',
+  });
+}
+
+function adminToken() {
+  return signAccessToken({
+    sub: 'admin-id',
+    email: 'admin@test.com',
+    role: 'STORE_ADMIN',
+    storeId: STORE_ID,
   });
 }
 
@@ -111,6 +150,41 @@ describe('POST /api/v1/payments/initialize', () => {
         data: { paystackReference: 'ref_abc' },
       }),
     );
+  });
+
+  it('rejects a callbackUrl pointing off this app\'s origin → 422', async () => {
+    const res = await request(app)
+      .post('/api/v1/payments/initialize')
+      .set('Authorization', `Bearer ${cashierToken()}`)
+      .send({ orderId: ORDER_ID, callbackUrl: 'https://evil.example.com/steal' });
+
+    expect(res.status).toBe(422);
+    expect(paystackSvc.initializeTransaction).not.toHaveBeenCalled();
+  });
+
+  it('accepts a callbackUrl on this app\'s own origin → 200', async () => {
+    prisma.store.findUnique.mockResolvedValue({ subscriptionStatus: 'ACTIVE' });
+    prisma.order.findUnique.mockResolvedValue({
+      id: ORDER_ID,
+      storeId: STORE_ID,
+      grandTotal: '10.00',
+      payments: [
+        { id: 'pay-1', method: 'PAYSTACK', status: 'PENDING', amount: '10.00' },
+      ],
+    });
+    prisma.payment.update.mockResolvedValue({});
+    paystackSvc.initializeTransaction.mockResolvedValue({
+      authorization_url: 'https://checkout.paystack.com/test',
+      access_code: 'acc_test',
+      reference: 'ref_abc',
+    });
+
+    const res = await request(app)
+      .post('/api/v1/payments/initialize')
+      .set('Authorization', `Bearer ${cashierToken()}`)
+      .send({ orderId: ORDER_ID, callbackUrl: 'http://localhost:3000/pos/receipt' });
+
+    expect(res.status).toBe(200);
   });
 
   it('returns 400 when order has no pending PAYSTACK payment', async () => {
@@ -262,6 +336,72 @@ describe('POST /api/v1/payments/webhook', () => {
     // Transaction must NOT be called again
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
+
+  it('persists the raw event BEFORE acking, and marks it PROCESSED after a successful handler run', async () => {
+    const body = buildWebhookBody({
+      event: 'charge.success',
+      data: { reference: 'ref_durable' },
+    });
+    paystackSvc.verifyWebhookSignature.mockReturnValue(true);
+    prisma.payment.findUnique.mockResolvedValue({
+      id: 'pay-1',
+      orderId: 'order-1',
+      status: 'PENDING',
+      order: { id: 'order-1', storeId: STORE_ID, status: 'PENDING', orderNumber: 'BRA-000001' },
+    });
+    prisma.$transaction.mockResolvedValue([{}, {}]);
+
+    const res = await request(app)
+      .post('/api/v1/payments/webhook')
+      .set('Content-Type', 'application/json')
+      .set('x-paystack-signature', sign(body))
+      .send(body);
+
+    expect(res.status).toBe(200);
+    // A durable row was written for this delivery
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ eventType: 'charge.success', reference: 'ref_durable' }),
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    // ...and marked PROCESSED once the handler actually finished
+    expect(prisma.webhookEvent.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'webhook-event-1' },
+        data: expect.objectContaining({ status: 'PROCESSED' }),
+      }),
+    );
+  });
+
+  it('marks the persisted event FAILED (not silently dropped) when the handler throws', async () => {
+    const body = buildWebhookBody({
+      event: 'charge.success',
+      data: { reference: 'ref_boom' },
+    });
+    paystackSvc.verifyWebhookSignature.mockReturnValue(true);
+    prisma.payment.findUnique.mockRejectedValue(new Error('DB exploded'));
+
+    const res = await request(app)
+      .post('/api/v1/payments/webhook')
+      .set('Content-Type', 'application/json')
+      .set('x-paystack-signature', sign(body))
+      .send(body);
+
+    // Still acks 200 — Paystack must not retry-storm us over our own bug
+    expect(res.status).toBe(200);
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(prisma.webhookEvent.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'webhook-event-1' },
+        data: expect.objectContaining({ status: 'FAILED' }),
+      }),
+    );
+  });
 });
 
 // ─── GET /api/v1/payments/verify/:reference ───────────────────────────────────
@@ -282,9 +422,10 @@ describe('GET /api/v1/payments/verify/:reference', () => {
       id: 'pay-1',
       orderId: ORDER_ID,
       status: 'PENDING',
-      order: { id: ORDER_ID, storeId: STORE_ID },
+      order: { id: ORDER_ID, storeId: STORE_ID, orderNumber: 'BRA-000001' },
     });
     prisma.$transaction.mockResolvedValue([{}, {}]);
+    prisma.auditLog.create.mockResolvedValue({});
 
     const res = await request(app)
       .get('/api/v1/payments/verify/ref_abc')
@@ -292,6 +433,17 @@ describe('GET /api/v1/payments/verify/:reference', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.paystackStatus).toBe('success');
+
+    // Manual verify mutates payment/order state exactly like the webhook
+    // path does, so it needs the same accountability trail.
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'PAYMENT_SUCCESS',
+          userId: 'cashier-id',
+        }),
+      }),
+    );
   });
 
   it('returns 404 for unknown reference', async () => {
@@ -358,5 +510,138 @@ describe('Subscription guard (requireActiveSubscription)', () => {
 
     // GET is allowed; 404 because payment doesn't exist — not 402
     expect(res.status).toBe(404);
+  });
+});
+
+// ─── POST /api/v1/payments/subscribe (lazy Paystack Plan creation) ────────────
+
+describe('POST /api/v1/payments/subscribe', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const PLAN_ID = 'plan-pro';
+
+  it('rejects a callbackUrl pointing off this app\'s origin → 422', async () => {
+    const res = await request(app)
+      .post('/api/v1/payments/subscribe')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ planId: PLAN_ID, callbackUrl: 'https://evil.example.com/steal' });
+
+    expect(res.status).toBe(422);
+    expect(paystackSvc.initializeTransaction).not.toHaveBeenCalled();
+  });
+
+  function mockBaseLookups(planOverrides: Record<string, unknown> = {}) {
+    prisma.store.findUnique.mockResolvedValue({
+      id: STORE_ID,
+      subscriptionPlanId: 'plan-starter',
+      subscriptionStatus: 'ACTIVE',
+      paystackCustomerCode: 'CUS_existing',
+      paystackSubscriptionCode: null,
+      paystackEmailToken: null,
+    });
+    prisma.subscriptionPlan.findUnique.mockResolvedValueOnce({
+      id: PLAN_ID,
+      price: '20.00',
+      name: 'Pro',
+      maxBranches: 10,
+      maxUsers: 10,
+      paystackPlanCode: null,
+      paystackPlanAmount: null,
+      ...planOverrides,
+    });
+    prisma.user.findUnique.mockResolvedValue({ name: 'Jane Admin' });
+    prisma.branch.count.mockResolvedValue(1);
+    prisma.user.count.mockResolvedValue(1);
+  }
+
+  it('creates a Paystack Plan on first-ever paid subscribe and uses it', async () => {
+    mockBaseLookups();
+    paystackSvc.createPlan.mockResolvedValue({ plan_code: 'PLN_new123' });
+    prisma.subscriptionPlan.updateMany.mockResolvedValue({ count: 1 });
+    paystackSvc.initializeTransaction.mockResolvedValue({
+      authorization_url: 'https://checkout.paystack.com/sub1',
+      access_code: 'access_1',
+      reference: 'ref_sub_1',
+    });
+
+    const res = await request(app)
+      .post('/api/v1/payments/subscribe')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ planId: PLAN_ID });
+
+    expect(res.status).toBe(200);
+    expect(paystackSvc.createPlan).toHaveBeenCalledTimes(1);
+    expect(prisma.subscriptionPlan.updateMany).toHaveBeenCalledWith({
+      where: { id: PLAN_ID, paystackPlanCode: null },
+      data: { paystackPlanCode: 'PLN_new123', paystackPlanAmount: 2000 },
+    });
+    expect(paystackSvc.initializeTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ plan: 'PLN_new123' }),
+    );
+  });
+
+  it('defers to the winning concurrent request\'s plan code when it loses the optimistic-concurrency race', async () => {
+    mockBaseLookups();
+    paystackSvc.createPlan.mockResolvedValue({ plan_code: 'PLN_loser789' });
+    // This request loses the race — another request already persisted a plan code first.
+    prisma.subscriptionPlan.updateMany.mockResolvedValue({ count: 0 });
+    // Re-fetch after losing the race returns the winner's plan code.
+    prisma.subscriptionPlan.findUnique.mockResolvedValueOnce({
+      paystackPlanCode: 'PLN_winner456',
+    });
+    paystackSvc.initializeTransaction.mockResolvedValue({
+      authorization_url: 'https://checkout.paystack.com/sub2',
+      access_code: 'access_2',
+      reference: 'ref_sub_2',
+    });
+
+    const res = await request(app)
+      .post('/api/v1/payments/subscribe')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ planId: PLAN_ID });
+
+    expect(res.status).toBe(200);
+    // It still created its own Plan (couldn't know it would lose ahead of time)...
+    expect(paystackSvc.createPlan).toHaveBeenCalledTimes(1);
+    // ...but must checkout using the WINNER's persisted code, not its own orphaned one.
+    expect(paystackSvc.initializeTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ plan: 'PLN_winner456' }),
+    );
+  });
+
+  it('reuses the cached Paystack Plan code when price has not drifted', async () => {
+    mockBaseLookups({ paystackPlanCode: 'PLN_cached', paystackPlanAmount: 2000 });
+    paystackSvc.initializeTransaction.mockResolvedValue({
+      authorization_url: 'https://checkout.paystack.com/sub3',
+      access_code: 'access_3',
+      reference: 'ref_sub_3',
+    });
+
+    const res = await request(app)
+      .post('/api/v1/payments/subscribe')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ planId: PLAN_ID });
+
+    expect(res.status).toBe(200);
+    expect(paystackSvc.createPlan).not.toHaveBeenCalled();
+    expect(prisma.subscriptionPlan.updateMany).not.toHaveBeenCalled();
+    expect(paystackSvc.initializeTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ plan: 'PLN_cached' }),
+    );
+  });
+
+  it('blocks a switch that would leave the store over the target plan\'s branch/user limits → 409', async () => {
+    mockBaseLookups({ maxBranches: 1, maxUsers: 2 });
+    prisma.branch.count.mockResolvedValue(3); // store has 3 active branches
+    prisma.user.count.mockResolvedValue(1);
+
+    const res = await request(app)
+      .post('/api/v1/payments/subscribe')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ planId: PLAN_ID });
+
+    expect(res.status).toBe(409);
+    expect(paystackSvc.createPlan).not.toHaveBeenCalled();
+    expect(paystackSvc.initializeTransaction).not.toHaveBeenCalled();
   });
 });

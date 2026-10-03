@@ -5,31 +5,31 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import { AppError } from '../../middleware/error';
 import { resolveStoreIdForRequest } from '../../middleware/tenant';
 import { createOrderSchema, orderListQuerySchema } from './orders.schema';
-import { getIdempotentResult, setIdempotentResult } from '../../utils/idempotency';
 
 // ─── Create order ─────────────────────────────────────────────────────────────
+// Idempotency (double-tapped "Charge") is handled entirely by
+// orders.service.ts via the (storeId, clientOrderId) DB unique constraint —
+// race-safe under concurrency and correct across more than one server
+// instance, unlike an in-process cache. The Idempotency-Key header is folded
+// into clientOrderId (when the body doesn't already supply one) so callers
+// using either convention go through that same DB-level mechanism rather
+// than a separate, weaker one.
 
 export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   const { sub: userId, branchId } = req.user!;
   if (!branchId) throw new AppError('No branch assigned to this user', 400);
 
-  // Header-based idempotency check — prevents double-tapping "Charge"
-  const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
-  if (idempotencyKey) {
-    const cached = getIdempotentResult(userId, idempotencyKey);
-    if (cached !== undefined) {
-      return sendSuccess(res, cached, 'Order already processed (idempotent)', 200);
-    }
-  }
-
   const body = createOrderSchema.parse(req.body);
+
+  const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
+  if (idempotencyKey && !body.clientOrderId) {
+    body.clientOrderId = idempotencyKey;
+  }
 
   const storeId = req.storeId ?? req.user!.storeId;
   if (!storeId) throw new AppError('Store context missing', 400);
 
   const { order, duplicate } = await ordersService.createOrder(storeId, userId, branchId, body);
-
-  if (idempotencyKey) setIdempotentResult(userId, idempotencyKey, order);
 
   const statusCode = duplicate ? 200 : 201;
   sendSuccess(res, { ...order, duplicate }, 'Order created', statusCode);

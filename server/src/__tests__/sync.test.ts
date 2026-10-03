@@ -24,7 +24,7 @@ jest.mock('../config/database', () => ({
       findMany: jest.fn(),
       count: jest.fn(),
     },
-    branch: { findUnique: jest.fn() },
+    branch: { findUnique: jest.fn(), findFirst: jest.fn() },
     category: { findMany: jest.fn() },
     store: { findUniqueOrThrow: jest.fn() },
     auditLog: { create: jest.fn() },
@@ -45,7 +45,7 @@ const { prisma } = require('../config/database') as {
       findMany: jest.Mock;
       count: jest.Mock;
     };
-    branch: { findUnique: jest.Mock };
+    branch: { findUnique: jest.Mock; findFirst: jest.Mock };
     category: { findMany: jest.Mock };
     store: { findUniqueOrThrow: jest.Mock };
     auditLog: { create: jest.Mock };
@@ -270,6 +270,10 @@ describe('POST /api/v1/orders — offline stock handling', () => {
       items: [{ productId: PRODUCT_ID, quantity: 1 }],
       payments: [{ method: 'CASH', amount: 10 }],
       clientOrderId: '550e8400-e29b-41d4-a716-446655440002',
+      // offlineReference — not clientOrderId — is what actually selects the
+      // oversell-tolerant upsert path now; clientOrderId alone is just a
+      // dedup key and no longer implies "offline" (see orders.service.ts).
+      offlineReference: 'OFF-000002',
     };
 
     const res = await request(app)
@@ -287,20 +291,26 @@ describe('POST /api/v1/orders — offline stock handling', () => {
 describe('POST /api/v1/sync/orders', () => {
   beforeEach(() => jest.clearAllMocks());
 
+  // offlineReference is what genuine batch-synced orders always carry in
+  // production (useSyncEngine.ts) — it's what actually selects the
+  // oversell-tolerant upsert path now, not clientOrderId alone.
   const goodOrder = {
     clientOrderId: '550e8400-e29b-41d4-a716-446655440010',
+    offlineReference: 'OFF-000010',
     items: [{ productId: PRODUCT_ID, quantity: 1 }],
     payments: [{ method: 'CASH', amount: 10 }],
   };
 
   const duplicateOrder = {
     clientOrderId: '550e8400-e29b-41d4-a716-446655440011',
+    offlineReference: 'OFF-000011',
     items: [{ productId: PRODUCT_ID, quantity: 1 }],
     payments: [{ method: 'CASH', amount: 10 }],
   };
 
   const badOrder = {
     clientOrderId: '550e8400-e29b-41d4-a716-446655440012',
+    offlineReference: 'OFF-000012',
     items: [{ productId: PRODUCT_ID, quantity: 1 }],
     payments: [{ method: 'CASH', amount: 999 }], // payment mismatch → will fail
   };
@@ -322,6 +332,11 @@ describe('POST /api/v1/sync/orders', () => {
       { id: 'inv-1', productId: PRODUCT_ID, quantity: 100 },
     ]);
     prisma.inventoryItem.updateMany.mockResolvedValue({ count: 1 });
+    // goodOrder carries offlineReference, so it goes through the offline
+    // upsert path (sequential, no $transaction needed for stock).
+    prisma.inventoryItem.upsert.mockResolvedValue({
+      id: 'inv-1', productId: PRODUCT_ID, branchId: BRANCH_ID, quantity: 99, lowStockThreshold: 10,
+    });
     prisma.order.count.mockResolvedValue(0);
     prisma.stockMovement.createMany.mockResolvedValue({ count: 1 });
     prisma.order.create.mockResolvedValue(
@@ -413,6 +428,7 @@ describe('GET /api/v1/sync/catalog', () => {
     prisma.product.findMany.mockResolvedValue(mockProducts);
     prisma.inventoryItem.findMany.mockResolvedValue(mockInventory);
     prisma.store.findUniqueOrThrow.mockResolvedValue(mockStore);
+    prisma.branch.findFirst.mockResolvedValue({ id: BRANCH_ID });
   }
 
   it('returns full catalog snapshot when no since param', async () => {
@@ -462,6 +478,23 @@ describe('GET /api/v1/sync/catalog', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.userPermissions.role).toBe('STORE_ADMIN');
+  });
+
+  it('rejects a branchId that does not belong to the caller\'s store → 404', async () => {
+    // Previously: effectiveBranchId (from query.branchId) was passed straight
+    // into inventoryItem.findMany with no ownership check — a STORE_ADMIN
+    // could read another tenant's live stock by guessing/knowing their
+    // branch id. branch.findFirst returning null (no match for this store)
+    // must now block the request instead of silently returning that data.
+    setupCatalogMocks();
+    prisma.branch.findFirst.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get('/api/v1/sync/catalog?branchId=other-store-branch')
+      .set('Authorization', `Bearer ${adminToken()}`);
+
+    expect(res.status).toBe(404);
+    expect(prisma.inventoryItem.findMany).not.toHaveBeenCalled();
   });
 
   it('rejects unauthenticated → 401', async () => {

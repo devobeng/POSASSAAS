@@ -22,7 +22,7 @@ export default function ProductsPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
 
-  const { data, isLoading } = useProducts({ search, page, limit: 20, categoryId: categoryFilter || undefined });
+  const { data, isLoading, isError, error, refetch } = useProducts({ search, page, limit: 20, categoryId: categoryFilter || undefined });
   const { data: categories } = useCategories();
   const { mutate: deleteProduct, isPending: isDeleting } = useDeleteProduct(deleteId ?? '');
   const { mutateAsync: importCSV, isPending: isImporting } = useImportProductsCSV();
@@ -143,6 +143,9 @@ export default function ProductsPage() {
         columns={columns}
         data={data?.items ?? []}
         isLoading={isLoading}
+        isError={isError}
+        error={error}
+        onRetry={refetch}
         keyExtractor={(p) => p.id}
         pagination={data?.meta}
         onPageChange={setPage}

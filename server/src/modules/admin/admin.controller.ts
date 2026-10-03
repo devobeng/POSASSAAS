@@ -10,13 +10,25 @@ export const getStores = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const suspendStore = asyncHandler(async (req: Request, res: Response) => {
-  const store = await adminService.setStoreStatus(req.params.id, 'INACTIVE', req.user!.sub);
-  sendSuccess(res, store, 'Store suspended');
+  const store = await adminService.setStoreStatus(req.params.id, 'SUSPENDED', req.user!.sub);
+  sendSuccess(
+    res,
+    store,
+    store.billingSyncFailed
+      ? 'Store suspended — but Paystack billing could not be paused; verify in the Paystack dashboard'
+      : 'Store suspended',
+  );
 });
 
 export const activateStore = asyncHandler(async (req: Request, res: Response) => {
   const store = await adminService.setStoreStatus(req.params.id, 'ACTIVE', req.user!.sub);
-  sendSuccess(res, store, 'Store activated');
+  sendSuccess(
+    res,
+    store,
+    store.billingSyncFailed
+      ? 'Store activated — but Paystack billing could not be resumed; verify in the Paystack dashboard'
+      : 'Store activated',
+  );
 });
 
 export const getPlatformStats = asyncHandler(async (_req: Request, res: Response) => {

@@ -5,6 +5,7 @@ import { useAuthStore } from '@/store/authStore';
 import { useOrders, useOrder, useRefundOrder } from '@/hooks/api/useOrders';
 import { useBranches } from '@/hooks/api/useBranches';
 import { useUiStore } from '@/store/uiStore';
+import { getErrorMessage } from '@/lib/errors';
 import DataTable, { type Column } from '@/components/ui/DataTable';
 import Badge, { type BadgeVariant } from '@/components/ui/Badge';
 import Drawer from '@/components/ui/Drawer';
@@ -30,7 +31,7 @@ export default function OrdersPage() {
 
   const canRefund = user?.role === 'BRANCH_MANAGER' || user?.role === 'STORE_ADMIN' || user?.role === 'SUPER_ADMIN';
 
-  const { data, isLoading } = useOrders({
+  const { data, isLoading, isError, error, refetch } = useOrders({
     page, limit: 20,
     status: statusFilter || undefined,
     branchId: branchFilter || undefined,
@@ -55,8 +56,7 @@ export default function OrdersPage() {
     refundOrder(undefined, {
       onSuccess: () => { toast('Order refunded', 'success'); setRefundId(null); setSelectedId(null); },
       onError: (err: unknown) => {
-        const e = err as { response?: { data?: { message?: string } } };
-        toast(e.response?.data?.message ?? 'Refund failed', 'error');
+        toast(getErrorMessage(err, 'Refund failed'), 'error');
       },
     });
   };
@@ -106,6 +106,9 @@ export default function OrdersPage() {
         columns={columns}
         data={data?.items ?? []}
         isLoading={isLoading}
+        isError={isError}
+        error={error}
+        onRetry={refetch}
         keyExtractor={(o) => o.id}
         pagination={data?.meta}
         onPageChange={setPage}

@@ -170,7 +170,9 @@ export default function POSPage() {
           <StoreIcon className="w-10 h-10 mb-3 mx-auto text-gray-300 dark:text-gray-700" />
           <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">No branch assigned</p>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Contact your store admin to assign you to a branch.
+            {user?.role === 'STORE_ADMIN' || user?.role === 'SUPER_ADMIN'
+              ? 'Assign yourself to a branch from Users to use the POS terminal.'
+              : 'Contact your store admin to assign you to a branch.'}
           </p>
         </div>
       </div>

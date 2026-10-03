@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useMutation } from '@tanstack/react-query';
 import api from '@/lib/axios';
 import { useAuthStore } from '@/store/authStore';
+import { getErrorMessage } from '@/lib/errors';
 import PasswordInput from '@/components/ui/PasswordInput';
 import type { ApiResponse, User, Store } from '@/types';
 
@@ -38,8 +39,8 @@ export default function RegisterPage() {
       setAuth(data.user, data.accessToken);
       router.push('/select-plan');
     },
-    onError: (err: { response?: { data?: { message?: string } } }) => {
-      setError(err.response?.data?.message ?? 'Registration failed');
+    onError: (err: unknown) => {
+      setError(getErrorMessage(err, 'Registration failed — please check your details and try again'));
     },
   });
 
@@ -64,7 +65,7 @@ export default function RegisterPage() {
     return (
       <div>
         <label htmlFor={id} className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-          {label}
+          {label} <span className="text-red-500">*</span>
         </label>
         {type === 'password' ? (
           <PasswordInput

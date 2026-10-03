@@ -1,9 +1,31 @@
 import type { Request, Response, NextFunction } from 'express';
 import { prisma } from '../config/database';
 import { AppError } from './error';
+import { cacheGet, cacheSet, cacheDel } from '../utils/cache';
 
-const BLOCKED_STATUSES = ['INACTIVE', 'EXPIRED', 'CANCELLED'] as const;
+const BLOCKED_STATUSES = ['INACTIVE', 'EXPIRED', 'CANCELLED', 'SUSPENDED'] as const;
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+// This check runs on every single write request app-wide — the busiest path
+// being POS checkout — yet subscriptionStatus changes rarely (a webhook, an
+// admin action, a plan switch). Caching it avoids a DB round trip on every
+// mutation. The TTL is kept short because this result gates writes: a stale
+// ACTIVE read for up to this long after a SUSPEND/CANCEL would let a few
+// extra writes through before self-healing. Every write site that changes
+// Store.subscriptionStatus also calls invalidateSubscriptionStatusCache so
+// the common case (this instance made the change) is immediate; the TTL is
+// only the fallback for out-of-band changes (a webhook hitting a different
+// instance, a direct DB update).
+const STATUS_CACHE_TTL_MS = 15_000;
+
+function statusCacheKey(storeId: string): string {
+  return `sub-status:${storeId}`;
+}
+
+/** Call after any write to Store.subscriptionStatus. */
+export async function invalidateSubscriptionStatusCache(storeId: string): Promise<void> {
+  await cacheDel(statusCacheKey(storeId));
+}
 
 /**
  * Applied per-router. Blocks write operations when a store's subscription
@@ -18,14 +40,24 @@ export function requireActiveSubscription() {
     if (!storeId) return next(); // SUPER_ADMIN — no storeId
 
     try {
-      const store = await prisma.store.findUnique({
-        where: { id: storeId },
-        select: { subscriptionStatus: true },
-      });
+      const cached = await cacheGet(statusCacheKey(storeId));
+      let status: string;
 
-      if (!store) return next(new AppError('Store not found', 404));
+      if (typeof cached === 'string') {
+        status = cached;
+      } else {
+        const store = await prisma.store.findUnique({
+          where: { id: storeId },
+          select: { subscriptionStatus: true },
+        });
 
-      if (BLOCKED_STATUSES.includes(store.subscriptionStatus as typeof BLOCKED_STATUSES[number])) {
+        if (!store) return next(new AppError('Store not found', 404));
+
+        status = store.subscriptionStatus;
+        await cacheSet(statusCacheKey(storeId), status, STATUS_CACHE_TTL_MS);
+      }
+
+      if (BLOCKED_STATUSES.includes(status as typeof BLOCKED_STATUSES[number])) {
         return next(
           new AppError(
             'Your subscription is inactive. Please renew to continue.',

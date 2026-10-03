@@ -17,6 +17,7 @@ import {
   useUploadExpenseReceipt,
 } from '@/hooks/api/useExpenses';
 import { useBranches } from '@/hooks/api/useBranches';
+import { getErrorMessage } from '@/lib/errors';
 import { blockInvalidNumberKey } from '@/lib/numericInput';
 import type { Expense, ExpenseStatus } from '@/types';
 
@@ -93,7 +94,7 @@ export default function ExpensesPage() {
 
   const status = activeTab === 'ALL' ? undefined : activeTab;
 
-  const { data: expData, isLoading } = useExpenses({
+  const { data: expData, isLoading, isError, error, refetch } = useExpenses({
     page, limit: 20,
     status,
     categoryId: filterCategory || undefined,
@@ -148,7 +149,7 @@ export default function ExpensesPage() {
       }
       setDrawerOpen(false);
     } catch (err: unknown) {
-      toast((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed to save expense', 'error');
+      toast(getErrorMessage(err, 'Failed to save expense'), 'error');
     }
   };
 
@@ -157,7 +158,7 @@ export default function ExpensesPage() {
 
   const handleApprove = async (id: string) => {
     try { await approveExpense(id); toast('Expense approved', 'success'); }
-    catch (err: unknown) { toast((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed', 'error'); }
+    catch (err: unknown) { toast(getErrorMessage(err, 'Failed to approve expense'), 'error'); }
   };
 
   const handleReject = async () => {
@@ -166,20 +167,20 @@ export default function ExpensesPage() {
       toast('Expense rejected', 'success');
       setReject({ open: false, expenseId: '', note: '' });
     } catch (err: unknown) {
-      toast((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed', 'error');
+      toast(getErrorMessage(err, 'Failed to reject expense'), 'error');
     }
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this expense?')) return;
     try { await deleteExpense(id); toast('Deleted', 'success'); }
-    catch { toast('Cannot delete', 'error'); }
+    catch (err: unknown) { toast(getErrorMessage(err, 'Failed to delete expense'), 'error'); }
   };
 
   // ── Receipt upload ─────────────────────────────────────────────────────────
   const handleReceiptFile = async (expenseId: string, file: File) => {
     try { await uploadReceipt({ id: expenseId, file }); toast('Receipt uploaded', 'success'); }
-    catch { toast('Upload failed', 'error'); }
+    catch (err: unknown) { toast(getErrorMessage(err, 'Failed to upload receipt'), 'error'); }
   };
 
   // ── Columns ────────────────────────────────────────────────────────────────
@@ -322,6 +323,9 @@ export default function ExpensesPage() {
         columns={columns}
         data={items}
         isLoading={isLoading}
+        isError={isError}
+        error={error}
+        onRetry={refetch}
         keyExtractor={(e) => e.id}
         emptyMessage="No expenses found"
         emptyDescription={activeTab === 'PENDING' ? 'No expenses pending approval' : 'Record your first expense to get started'}
@@ -356,7 +360,7 @@ export default function ExpensesPage() {
         }>
         <form id="expense-form" onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1.5">Category *</label>
+            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1.5">Category <span className="text-red-500">*</span></label>
             <select required value={form.categoryId} onChange={(e) => setForm((f) => ({ ...f, categoryId: e.target.value }))} className={`w-full ${inputCls}`}>
               <option value="">Select category</option>
               {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -374,7 +378,7 @@ export default function ExpensesPage() {
           )}
 
           <div>
-            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1.5">Amount *</label>
+            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1.5">Amount <span className="text-red-500">*</span></label>
             <div className="relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-400">₦</span>
               <input type="number" required min="0.01" step="0.01" placeholder="0.00"
@@ -385,14 +389,14 @@ export default function ExpensesPage() {
           </div>
 
           <div>
-            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1.5">Date *</label>
+            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1.5">Date <span className="text-red-500">*</span></label>
             <input type="date" required value={form.expenseDate}
               onChange={(e) => setForm((f) => ({ ...f, expenseDate: e.target.value }))}
               className={`w-full ${inputCls}`} />
           </div>
 
           <div>
-            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1.5">Description *</label>
+            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1.5">Description <span className="text-red-500">*</span></label>
             <textarea required rows={3} maxLength={500}
               value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
               className={`w-full resize-none ${inputCls}`} placeholder="What is this expense for?" />

@@ -50,10 +50,18 @@ export function usePlatformStats() {
   });
 }
 
+export interface StoreStatusResult {
+  id: string;
+  name: string;
+  subscriptionStatus: SubscriptionStatus;
+  billingSyncFailed: boolean;
+}
+
 export function useSuspendStore(id: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.post(`/admin/stores/${id}/suspend`),
+    mutationFn: () =>
+      api.post<ApiResponse<StoreStatusResult>>(`/admin/stores/${id}/suspend`).then((r) => r.data.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'stores'] }),
   });
 }
@@ -61,7 +69,8 @@ export function useSuspendStore(id: string) {
 export function useActivateStore(id: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.post(`/admin/stores/${id}/activate`),
+    mutationFn: () =>
+      api.post<ApiResponse<StoreStatusResult>>(`/admin/stores/${id}/activate`).then((r) => r.data.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'stores'] }),
   });
 }

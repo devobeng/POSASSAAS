@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useMutation } from '@tanstack/react-query';
 import api from '@/lib/axios';
 import { useAuthStore } from '@/store/authStore';
+import { getErrorMessage } from '@/lib/errors';
 import PasswordInput from '@/components/ui/PasswordInput';
 import type { ApiResponse, User } from '@/types';
 
@@ -25,10 +26,13 @@ export default function LoginPage() {
       api.post<ApiResponse<LoginResponse>>('/auth/login', data).then((r) => r.data.data),
     onSuccess: (data) => {
       setAuth(data.user, data.accessToken);
-      router.push('/dashboard');
+      // SUPER_ADMIN has no storeId, so the per-store /dashboard can never
+      // load data for them — every KPI/report call 400s and they land on an
+      // error banner before manually finding /admin. Send them there directly.
+      router.push(data.user.role === 'SUPER_ADMIN' ? '/admin' : '/dashboard');
     },
-    onError: (err: { response?: { data?: { message?: string } } }) => {
-      setError(err.response?.data?.message ?? 'Login failed');
+    onError: (err: unknown) => {
+      setError(getErrorMessage(err, 'Login failed — please check your details and try again'));
     },
   });
 
@@ -54,7 +58,7 @@ export default function LoginPage() {
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Email
+            Email <span className="text-red-500">*</span>
           </label>
           <input
             id="email"
@@ -70,7 +74,7 @@ export default function LoginPage() {
 
         <div>
           <label htmlFor="password" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Password
+            Password <span className="text-red-500">*</span>
           </label>
           <PasswordInput
             id="password"

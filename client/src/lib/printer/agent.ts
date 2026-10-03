@@ -33,10 +33,18 @@ export class AgentTransport {
 
   // Send pre-encoded ESC/POS bytes to the agent
   async send(data: Uint8Array): Promise<void> {
+    // Copied into a plain ArrayBuffer rather than passed as a raw Uint8Array:
+    // TypeScript's current lib.dom typings type a bare Uint8Array's `.buffer`
+    // as ArrayBufferLike (ArrayBuffer | SharedArrayBuffer), which fails
+    // assignability to BodyInit/BlobPart even though fetch accepts typed
+    // arrays fine at runtime. A fresh copy is unambiguously ArrayBuffer.
+    const buffer = new ArrayBuffer(data.byteLength);
+    new Uint8Array(buffer).set(data);
+
     const res = await fetch(`${this.baseUrl}/print/raw`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
-      body: data,
+      body: buffer,
       signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {

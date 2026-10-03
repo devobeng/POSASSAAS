@@ -127,8 +127,12 @@ export const paymentMethodsBreakdown = asyncHandler(async (req: Request, res: Re
 // ─── Inventory Valuation ──────────────────────────────────────────────────────
 
 export const inventoryValuation = asyncHandler(async (req: Request, res: Response) => {
-  const { role, storeId, branchId } = getScope(req);
-  requireAdminRole(role);
+  // No requireAdminRole here — the route already scopes this to managerPlus
+  // (BRANCH_MANAGER+), matching its sibling managerPlus reports below. A
+  // stray requireAdminRole call here previously 403'd BRANCH_MANAGER despite
+  // the route explicitly allowing them; getScope already forces branchId to
+  // their own branch, so they only ever see their own branch's valuation.
+  const { storeId, branchId } = getScope(req);
   const query = baseDateRangeSchema.parse(req.query);
 
   const { items, totals } = await reportsService.getInventoryValuation(storeId, branchId);

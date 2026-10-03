@@ -43,7 +43,11 @@ export class WebUsbTransport {
 
   async send(data: Uint8Array): Promise<void> {
     if (!this.device || !this.device.opened) throw new Error('USB printer not connected');
-    await this.device.transferOut(this.endpointOut, data);
+    // Copied into a plain ArrayBuffer — see agent.ts for why a bare
+    // Uint8Array doesn't satisfy BufferSource under this TS lib version.
+    const buffer = new ArrayBuffer(data.byteLength);
+    new Uint8Array(buffer).set(data);
+    await this.device.transferOut(this.endpointOut, buffer);
   }
 
   async disconnect(): Promise<void> {

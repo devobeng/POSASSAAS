@@ -9,5 +9,4 @@ Thumbs.db
 .turbo/
 coverage/
 .nyc_output/
-prisma/migrations/
 *.tsbuildinfo

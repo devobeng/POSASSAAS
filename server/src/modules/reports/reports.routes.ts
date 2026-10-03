@@ -28,7 +28,10 @@ reportsRouter.get('/expenses-summary', authorize(...managerPlus), reports, repor
 
 // Deeper financial analytics — requires the 'analytics' feature (Pro only).
 reportsRouter.get('/inventory-valuation', authorize(...managerPlus), analytics, reportsController.inventoryValuation);
-reportsRouter.get('/profit',              authorize(...allRoles),    analytics, reportsController.profit);
+// COGS/gross-margin data — same sensitivity as profit-and-loss below, so the
+// same managerPlus restriction: a CASHIER should never see cost price or
+// margin, only sales totals (sales-summary/sales-by-product above).
+reportsRouter.get('/profit',              authorize(...managerPlus), analytics, reportsController.profit);
 reportsRouter.get('/profit-and-loss',     authorize(...managerPlus), analytics, reportsController.profitAndLoss);
 
 // Cross-branch comparison — requires the 'multiBranch' feature (Pro only).

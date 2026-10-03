@@ -6,6 +6,7 @@ import { Check } from 'lucide-react';
 import { usePlans, useSubscriptionStatus, useSubscribeToPlan } from '@/hooks/api/usePlans';
 import { useUiStore } from '@/store/uiStore';
 import api from '@/lib/axios';
+import { getErrorMessage } from '@/lib/errors';
 import type { SubscriptionPlan } from '@/types';
 
 function daysLeft(trialEndsAt: string | null): number | null {
@@ -59,6 +60,10 @@ export default function SelectPlanPage() {
     setSelectingId(plan.id);
     try {
       const result = await subscribe(plan.id);
+      if (result.alreadyActive) {
+        toast('You are already on this plan', 'info');
+        return;
+      }
       if (result.free) {
         toast('Free plan activated', 'success');
         router.push('/dashboard');
@@ -69,8 +74,7 @@ export default function SelectPlanPage() {
         window.open(result.authorization_url, '_blank', 'noopener');
       }
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { message?: string } } };
-      toast(e.response?.data?.message ?? 'Failed to select plan', 'error');
+      toast(getErrorMessage(err, 'Failed to select plan'), 'error');
     } finally {
       setSelectingId(null);
     }
@@ -79,6 +83,17 @@ export default function SelectPlanPage() {
   const isLoading = plansLoading || statusLoading;
   const trialDays = status ? daysLeft(status.trialEndsAt) : null;
   const currentPlanId = status?.subscriptionPlan?.id;
+
+  if (status?.subscriptionStatus === 'SUSPENDED') {
+    return (
+      <div className="p-6 max-w-md mx-auto text-center space-y-3 pt-16">
+        <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Your store has been suspended</h1>
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          Contact support to reactivate your account — plans can&apos;t be changed while suspended.
+        </p>
+      </div>
+    );
+  }
 
   if (waitingRef) {
     return (

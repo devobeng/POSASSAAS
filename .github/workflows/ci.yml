@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  # Test/type-check-only values — never real secrets. The server's test
+  # suite fully mocks Prisma (see src/__tests__/env.setup.ts) and never
+  # opens a real DB connection; `prisma generate` only needs *a* string
+  # here to resolve the schema's env("DATABASE_URL"), not a reachable one.
+  DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ci_placeholder
+  DIRECT_URL: postgresql://postgres:postgres@localhost:5432/ci_placeholder
+  JWT_ACCESS_SECRET: ci-pipeline-dummy-access-secret-8f3a1c9d2e7b4560
+  JWT_REFRESH_SECRET: ci-pipeline-dummy-refresh-secret-6b2e9f4a1d8c3075
+
+jobs:
+  server:
+    name: Server — lint, type-check, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Root install — this is an npm workspaces monorepo with one shared
+      # lockfile; installing from inside server/ or client/ directly isn't
+      # how the dependency graph is laid out.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        working-directory: server
+        run: npx prisma generate
+
+      # `npm run lint` is deliberately not gated here yet — the existing
+      # codebase currently has ~228 pre-existing eslint violations unrelated
+      # to any specific change, so wiring it in as a blocking step today
+      # would make CI red on the very first run for reasons nobody just
+      # introduced. Type-check + test are both clean now and are the two
+      # checks that actually catch real regressions; add lint back once
+      # that backlog is cleared (or as a non-blocking/warn-only step).
+      - name: Type-check
+        working-directory: server
+        run: npx tsc --noEmit
+
+      - name: Test
+        working-directory: server
+        run: npm test
+
+  client:
+    name: Client — type-check, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        working-directory: client
+        run: npm run type-check
+
+      - name: Test
+        working-directory: client
+        run: npm test
+
+      - name: Build
+        working-directory: client
+        run: npm run build

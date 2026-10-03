@@ -5,6 +5,16 @@ import { auditLog } from '../../utils/audit';
 import { uploadImage } from '../../utils/cloudinary';
 import type { CreateProductInput, UpdateProductInput, ProductListQuery } from './products.schema';
 
+// ─── Guards ───────────────────────────────────────────────────────────────────
+
+async function assertCategoryInStore(storeId: string, categoryId: string): Promise<void> {
+  const category = await prisma.category.findFirst({
+    where: { id: categoryId, storeId },
+    select: { id: true },
+  });
+  if (!category) throw new AppError('Category not found or does not belong to this store', 404);
+}
+
 // ─── SKU generation ───────────────────────────────────────────────────────────
 
 function makeSku(name: string): string {
@@ -88,6 +98,10 @@ export async function createProduct(
 ) {
   const sku = data.sku ?? (await uniqueSku(storeId, data.name));
 
+  if (data.categoryId) {
+    await assertCategoryInStore(storeId, data.categoryId);
+  }
+
   const product = await prisma.product.create({
     data: {
       storeId,
@@ -125,6 +139,10 @@ export async function updateProduct(
     select: { id: true },
   });
   if (!existing) throw new AppError('Product not found', 404);
+
+  if (data.categoryId) {
+    await assertCategoryInStore(storeId, data.categoryId);
+  }
 
   const product = await prisma.product.update({
     where: { id: productId },

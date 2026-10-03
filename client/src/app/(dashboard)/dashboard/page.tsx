@@ -34,11 +34,30 @@ function KpiCard({
   );
 }
 
-function ChartCard({ title, children, isLoading }: { title: string; children: React.ReactNode; isLoading?: boolean }) {
+function ChartCard({
+  title, children, isLoading, isEmpty, emptyMessage = 'No data for this period',
+}: {
+  title: string;
+  children: React.ReactNode;
+  isLoading?: boolean;
+  isEmpty?: boolean;
+  emptyMessage?: string;
+}) {
   return (
     <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-xl p-5 shadow-sm">
       <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4">{title}</h3>
-      {isLoading ? <div className="h-48 bg-gray-50 dark:bg-gray-800 rounded-lg animate-pulse" /> : children}
+      {isLoading ? (
+        <div className="h-48 bg-gray-50 dark:bg-gray-800 rounded-lg animate-pulse" />
+      ) : isEmpty ? (
+        // A chart with no data renders as a bare, empty axis with no lines/
+        // bars and nothing telling the viewer why — indistinguishable from
+        // "still loading" or "broken" at a glance. Say so explicitly instead.
+        <div className="h-48 flex items-center justify-center text-sm text-gray-400 dark:text-gray-500">
+          {emptyMessage}
+        </div>
+      ) : (
+        children
+      )}
     </div>
   );
 }
@@ -167,7 +186,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Sales trend — spans 2 cols */}
         <div className="lg:col-span-2">
-          <ChartCard title="Revenue for the last 30 days" isLoading={salesLoading}>
+          <ChartCard title="Revenue for the last 30 days" isLoading={salesLoading} isEmpty={salesChartData.length === 0}>
             <ClientOnly fallback={<div className="h-48 bg-gray-50 dark:bg-gray-800 rounded-lg animate-pulse" />}>
               <ResponsiveContainer width="100%" height={192}>
                 <LineChart data={salesChartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
@@ -200,7 +219,7 @@ export default function DashboardPage() {
             </ClientOnly>
           </ChartCard>
         ) : (
-          <ChartCard title="Payment methods" isLoading={paymentLoading}>
+          <ChartCard title="Payment methods" isLoading={paymentLoading} isEmpty={paymentChart.length === 0}>
             <ClientOnly fallback={<div className="h-48 bg-gray-50 dark:bg-gray-800 rounded-lg animate-pulse" />}>
               <ResponsiveContainer width="100%" height={192}>
                 <PieChart>
@@ -219,7 +238,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Top products */}
-      <ChartCard title="Top 5 products (last 30 days)" isLoading={productsLoading}>
+      <ChartCard title="Top 5 products (last 30 days)" isLoading={productsLoading} isEmpty={topProductsChart.length === 0}>
         <ClientOnly fallback={<div className="h-40 bg-gray-50 dark:bg-gray-800 rounded-lg animate-pulse" />}>
           <ResponsiveContainer width="100%" height={160}>
             <BarChart data={topProductsChart} layout="vertical" margin={{ top: 0, right: 24, left: 0, bottom: 0 }}>

@@ -33,7 +33,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           }}
         />
       </head>
-      <body className={`${inter.className} bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100 antialiased`}>
+      <body className={`${inter.className} bg-slate-50 dark:bg-slate-950 text-gray-900 dark:text-gray-100 antialiased`}>
         <Providers>{children}</Providers>
       </body>
     </html>

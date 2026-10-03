@@ -32,7 +32,7 @@ export interface Expense {
   recordedBy: { id: string; name: string };
   approvedBy: { id: string; name: string } | null;
 }
-export type SubscriptionStatus = 'TRIAL' | 'ACTIVE' | 'INACTIVE' | 'EXPIRED' | 'CANCELLED';
+export type SubscriptionStatus = 'TRIAL' | 'ACTIVE' | 'INACTIVE' | 'EXPIRED' | 'CANCELLED' | 'SUSPENDED';
 export type OrderStatus = 'PENDING' | 'COMPLETED' | 'CANCELLED' | 'REFUNDED';
 export type PaymentMethod = 'CASH' | 'CARD' | 'MOBILE_MONEY' | 'PAYSTACK';
 export type PaymentStatus = 'PENDING' | 'SUCCESS' | 'FAILED' | 'REFUNDED';

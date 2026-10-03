@@ -19,6 +19,19 @@ export async function seedDefaultCategories(storeId: string) {
   });
 }
 
+// The categoryId FK only guarantees the row exists SOMEWHERE — without this,
+// a caller who obtains another store's ExpenseCategory id (guessable cuid,
+// or leaked via some other channel) can attach their own expense to it,
+// leaking that category's name into their own reports/joins. Mirrors
+// products.service.ts's assertCategoryInStore for the same class of bug.
+async function assertExpenseCategoryInStore(storeId: string, categoryId: string): Promise<void> {
+  const category = await prisma.expenseCategory.findFirst({
+    where: { id: categoryId, storeId },
+    select: { id: true },
+  });
+  if (!category) throw new AppError('Expense category not found or does not belong to this store', 404);
+}
+
 // ─── Categories ───────────────────────────────────────────────────────────────
 
 export async function listCategories(storeId: string) {
@@ -76,24 +89,39 @@ function buildDateFilter(start?: string, end?: string): Prisma.ExpenseWhereInput
   return { expenseDate };
 }
 
+function buildExpenseWhere(
+  storeId: string,
+  callerBranchId: string | undefined,
+  role: string,
+  query: Pick<ListExpensesQuery, 'branchId' | 'categoryId' | 'status' | 'startDate' | 'endDate'>,
+): Prisma.ExpenseWhereInput {
+  // BRANCH_MANAGER can only see own branch
+  const effectiveBranchId = role === 'BRANCH_MANAGER' ? callerBranchId : query.branchId;
+
+  return {
+    storeId,
+    ...(effectiveBranchId && { branchId: effectiveBranchId }),
+    ...(query.categoryId && { categoryId: query.categoryId }),
+    ...(query.status && { status: query.status as ExpenseStatus }),
+    ...buildDateFilter(query.startDate, query.endDate),
+  };
+}
+
+const EXPENSE_INCLUDE = {
+  category:   { select: { id: true, name: true } },
+  branch:     { select: { id: true, name: true } },
+  recordedBy: { select: { id: true, name: true } },
+  approvedBy: { select: { id: true, name: true } },
+} as const;
+
 export async function listExpenses(
   storeId: string,
   callerBranchId: string | undefined,
   role: string,
   query: ListExpensesQuery,
 ) {
-  const { page, limit, branchId, categoryId, status, startDate, endDate } = query;
-
-  // BRANCH_MANAGER can only see own branch
-  const effectiveBranchId = role === 'BRANCH_MANAGER' ? callerBranchId : branchId;
-
-  const where: Prisma.ExpenseWhereInput = {
-    storeId,
-    ...(effectiveBranchId && { branchId: effectiveBranchId }),
-    ...(categoryId && { categoryId }),
-    ...(status && { status: status as ExpenseStatus }),
-    ...buildDateFilter(startDate, endDate),
-  };
+  const { page, limit } = query;
+  const where = buildExpenseWhere(storeId, callerBranchId, role, query);
 
   const [total, items] = await Promise.all([
     prisma.expense.count({ where }),
@@ -102,19 +130,37 @@ export async function listExpenses(
       orderBy: [{ expenseDate: 'desc' }, { createdAt: 'desc' }],
       skip: (page - 1) * limit,
       take: limit,
-      include: {
-        category:   { select: { id: true, name: true } },
-        branch:     { select: { id: true, name: true } },
-        recordedBy: { select: { id: true, name: true } },
-        approvedBy: { select: { id: true, name: true } },
-      },
+      include: EXPENSE_INCLUDE,
     }),
   ]);
 
   return { total, page, limit, items };
 }
 
-export async function getExpense(storeId: string, id: string) {
+// CSV export must reflect the WHOLE matching range, not just whatever page
+// the UI happened to be on — listExpenses's `limit` (max 100) is a display
+// page size, not a real cap, and silently truncating a year-end export to
+// 100 rows with no error is worse than a slow query for a large range.
+export async function exportExpenses(
+  storeId: string,
+  callerBranchId: string | undefined,
+  role: string,
+  query: Pick<ListExpensesQuery, 'branchId' | 'categoryId' | 'status' | 'startDate' | 'endDate'>,
+) {
+  const where = buildExpenseWhere(storeId, callerBranchId, role, query);
+  return prisma.expense.findMany({
+    where,
+    orderBy: [{ expenseDate: 'desc' }, { createdAt: 'desc' }],
+    include: EXPENSE_INCLUDE,
+  });
+}
+
+export async function getExpense(
+  storeId: string,
+  id: string,
+  callerBranchId: string | undefined,
+  role: string,
+) {
   const expense = await prisma.expense.findFirst({
     where: { id, storeId },
     include: {
@@ -125,6 +171,12 @@ export async function getExpense(storeId: string, id: string) {
     },
   });
   if (!expense) throw new AppError('Expense not found', 404);
+  // Same branch restriction as update/delete — a BRANCH_MANAGER could
+  // otherwise read another branch's expense amounts/descriptions/receipts
+  // just by knowing or guessing its id.
+  if (role === 'BRANCH_MANAGER' && expense.branchId !== callerBranchId) {
+    throw new AppError('Forbidden', 403);
+  }
   return expense;
 }
 
@@ -145,6 +197,8 @@ export async function createExpense(
   recordedById: string,
   data: CreateExpenseInput,
 ) {
+  await assertExpenseCategoryInStore(storeId, data.categoryId);
+
   // Determine which branch this expense belongs to
   const branchId = role === 'BRANCH_MANAGER' ? callerBranchId : data.branchId;
 
@@ -210,6 +264,9 @@ export async function updateExpense(
   // Branch managers can only edit their own branch's expenses
   if (role === 'BRANCH_MANAGER' && existing.branchId !== callerBranchId) {
     throw new AppError('Forbidden', 403);
+  }
+  if (data.categoryId) {
+    await assertExpenseCategoryInStore(storeId, data.categoryId);
   }
 
   const updated = await prisma.expense.update({

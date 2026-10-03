@@ -3,7 +3,7 @@ import { authenticate, authorize } from '../../middleware/auth';
 import { tenantScope } from '../../middleware/tenant';
 import { validate } from '../../middleware/validate';
 import { upload } from '../../middleware/upload';
-import { updateStoreSchema, receiptSettingsSchema } from './store.schema';
+import { updateStoreSchema, receiptSettingsSchema, createAuditEntrySchema } from './store.schema';
 import * as storeController from './store.controller';
 
 export const storeRouter = Router();
@@ -14,6 +14,7 @@ storeRouter.post(
   authenticate,
   authorize('SUPER_ADMIN', 'STORE_ADMIN', 'BRANCH_MANAGER', 'CASHIER'),
   tenantScope,
+  validate(createAuditEntrySchema),
   storeController.createAuditEntry,
 );
 

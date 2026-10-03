@@ -2,21 +2,33 @@ import crypto from 'crypto';
 import { env } from '../config/env';
 
 const BASE_URL = 'https://api.paystack.co';
+// A hung Paystack response must not hang a POS checkout or a webhook handler
+// forever — fail fast and let the caller's existing error handling take over.
+const REQUEST_TIMEOUT_MS = 10_000;
 
 async function paystackRequest<T>(
   method: 'GET' | 'POST' | 'PUT',
   path: string,
   body?: Record<string, unknown>,
 ): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${env.PAYSTACK_SECRET_KEY}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    ...(body !== undefined && { body: JSON.stringify(body) }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${env.PAYSTACK_SECRET_KEY}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      ...(body !== undefined && { body: JSON.stringify(body) }),
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      throw new Error(`Paystack request timed out after ${REQUEST_TIMEOUT_MS}ms: ${method} ${path}`);
+    }
+    throw err;
+  }
 
   const data = (await res.json()) as { status: boolean; message?: string; data: T };
 
@@ -41,6 +53,13 @@ export function initializeTransaction(params: {
   reference?: string;
   callback_url?: string;
   metadata?: Record<string, unknown>;
+  // Linking a Plan code here (vs. calling /subscription separately) is
+  // Paystack's own recommended pattern for checkout-initiated subscriptions:
+  // Paystack creates the recurring Subscription itself once this charge
+  // succeeds, using the authorization the customer just gave — no separate
+  // POST /subscription call needed (that's only for admin-initiated
+  // subscriptions against an authorization you already hold).
+  plan?: string;
 }): Promise<TransactionInit> {
   return paystackRequest<TransactionInit>('POST', '/transaction/initialize', params as Record<string, unknown>);
 }
@@ -117,6 +136,13 @@ export function disableSubscription(params: {
   token: string;
 }): Promise<{ id: number }> {
   return paystackRequest<{ id: number }>('POST', '/subscription/disable', params as Record<string, unknown>);
+}
+
+export function enableSubscription(params: {
+  code: string;
+  token: string;
+}): Promise<{ id: number }> {
+  return paystackRequest<{ id: number }>('POST', '/subscription/enable', params as Record<string, unknown>);
 }
 
 // ─── Webhook signature verification ───────────────────────────────────────────

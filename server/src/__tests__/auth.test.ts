@@ -9,12 +9,17 @@ jest.mock('../config/database', () => ({
   prisma: {
     user: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       update: jest.fn(),
       create: jest.fn(),
     },
     store: {
       findUnique: jest.fn(),
       create: jest.fn(),
+      delete: jest.fn(),
+    },
+    subscriptionPlan: {
+      findFirst: jest.fn(),
     },
     $transaction: jest.fn(),
     $connect: jest.fn(),
@@ -25,8 +30,9 @@ jest.mock('../config/database', () => ({
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { prisma } = require('../config/database') as {
   prisma: {
-    user: { findUnique: jest.Mock; update: jest.Mock; create: jest.Mock };
-    store: { findUnique: jest.Mock; create: jest.Mock };
+    user: { findUnique: jest.Mock; findFirst: jest.Mock; update: jest.Mock; create: jest.Mock };
+    store: { findUnique: jest.Mock; create: jest.Mock; delete: jest.Mock };
+    subscriptionPlan: { findFirst: jest.Mock };
     $transaction: jest.Mock;
   };
 };
@@ -142,6 +148,122 @@ describe('POST /api/v1/auth/login', () => {
       expect.objectContaining({
         data: expect.objectContaining({ failedLoginAttempts: 1 }),
       }),
+    );
+  });
+});
+
+// ── POST /api/v1/auth/register-store ──────────────────────────────────────────
+// The entry point that provisions every new tenant — previously had zero
+// coverage despite being the single most consequential endpoint in a
+// multi-tenant SaaS: get this wrong and either signups break entirely, or
+// a failure mid-provisioning leaves an orphaned/broken store behind.
+describe('POST /api/v1/auth/register-store', () => {
+  const validBody = {
+    storeName: 'Jane\'s Shop',
+    ownerName: 'Jane Doe',
+    email: 'jane@example.com',
+    phone: '+233200000020',
+    password: 'Password@123',
+  };
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it('creates a store + STORE_ADMIN user in one flow → 201', async () => {
+    prisma.user.findFirst.mockResolvedValue(null); // no existing account
+    prisma.store.findUnique.mockResolvedValue(null); // slug is free
+    prisma.subscriptionPlan.findFirst.mockResolvedValue({ id: 'plan-free' });
+    prisma.store.create.mockResolvedValue({
+      id: 'store-new', name: 'Jane\'s Shop', slug: 'janes-shop',
+    });
+    prisma.user.create.mockResolvedValue({
+      id: 'user-new', email: 'jane@example.com', phone: '+233200000020',
+      name: 'Jane Doe', role: 'STORE_ADMIN', storeId: 'store-new', branchId: null,
+    });
+    prisma.user.update.mockResolvedValue({});
+
+    const res = await request(app)
+      .post('/api/v1/auth/register-store')
+      .send(validBody);
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.accessToken).toBeDefined();
+    expect(res.body.data.user.role).toBe('STORE_ADMIN');
+    expect(res.body.data.store.slug).toBe('janes-shop');
+    const cookies: string[] = res.headers['set-cookie'] as unknown as string[];
+    expect(cookies.some((c: string) => c.startsWith('pos_rt='))).toBe(true);
+
+    // The new store's plan is the Free plan, and it starts on TRIAL, not
+    // straight to ACTIVE — the trial-expiry cron / select-plan flow decide
+    // what happens after that.
+    expect(prisma.store.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          subscriptionPlanId: 'plan-free',
+          subscriptionStatus: 'TRIAL',
+        }),
+      }),
+    );
+  });
+
+  it('rejects when the email or phone is already registered → 409', async () => {
+    prisma.user.findFirst.mockResolvedValue({ id: 'existing-user' });
+
+    const res = await request(app)
+      .post('/api/v1/auth/register-store')
+      .send(validBody);
+
+    expect(res.status).toBe(409);
+    expect(prisma.store.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a weak password → 422 (schema validation)', async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/register-store')
+      .send({ ...validBody, password: 'weak' });
+
+    expect(res.status).toBe(422);
+    expect(prisma.user.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('deletes the just-created store if user creation fails, so no orphaned store is left behind', async () => {
+    prisma.user.findFirst.mockResolvedValue(null);
+    prisma.store.findUnique.mockResolvedValue(null);
+    prisma.subscriptionPlan.findFirst.mockResolvedValue({ id: 'plan-free' });
+    prisma.store.create.mockResolvedValue({ id: 'store-orphan', name: 'X', slug: 'x' });
+    prisma.store.delete.mockResolvedValue({});
+    prisma.user.create.mockRejectedValue(new Error('unexpected db error'));
+
+    const res = await request(app)
+      .post('/api/v1/auth/register-store')
+      .send(validBody);
+
+    expect(res.status).toBe(500);
+    expect(prisma.store.delete).toHaveBeenCalledWith({ where: { id: 'store-orphan' } });
+  });
+
+  it('appends a numeric suffix when the slug is already taken', async () => {
+    prisma.user.findFirst.mockResolvedValue(null);
+    // First slug check: taken. Second (with -1 suffix): free.
+    prisma.store.findUnique
+      .mockResolvedValueOnce({ id: 'other-store' })
+      .mockResolvedValueOnce(null);
+    prisma.subscriptionPlan.findFirst.mockResolvedValue({ id: 'plan-free' });
+    prisma.store.create.mockResolvedValue({
+      id: 'store-new', name: 'Jane\'s Shop', slug: 'jane-s-shop-1',
+    });
+    prisma.user.create.mockResolvedValue({
+      id: 'user-new', email: 'jane@example.com', phone: '+233200000020',
+      name: 'Jane Doe', role: 'STORE_ADMIN', storeId: 'store-new', branchId: null,
+    });
+    prisma.user.update.mockResolvedValue({});
+
+    const res = await request(app)
+      .post('/api/v1/auth/register-store')
+      .send(validBody);
+
+    expect(res.status).toBe(201);
+    expect(prisma.store.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ slug: 'jane-s-shop-1' }) }),
     );
   });
 });

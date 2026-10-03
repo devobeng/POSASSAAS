@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useAuthStore } from '@/store/authStore';
 import { useUiStore } from '@/store/uiStore';
+import { getErrorMessage } from '@/lib/errors';
 import {
   useCategories,
   useCreateCategory,
@@ -35,7 +36,7 @@ export default function CategoriesPage() {
       setNewName('');
       toast('Category created', 'success');
     } catch (err: unknown) {
-      toast((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed', 'error');
+      toast(getErrorMessage(err, 'Failed to create category'), 'error');
     }
   };
 
@@ -46,7 +47,7 @@ export default function CategoriesPage() {
       setEditId(null);
       toast('Category updated', 'success');
     } catch (err: unknown) {
-      toast((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed', 'error');
+      toast(getErrorMessage(err, 'Failed to update category'), 'error');
     }
   };
 
@@ -56,7 +57,7 @@ export default function CategoriesPage() {
       await remove(id);
       toast('Deleted', 'success');
     } catch (err: unknown) {
-      toast((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed', 'error');
+      toast(getErrorMessage(err, 'Failed to delete category'), 'error');
     }
   };
 

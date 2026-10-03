@@ -1,38 +1,16 @@
 /**
- * Cache layer: uses Redis when REDIS_URL is set, falls back to in-process Map.
- * To enable Redis: npm install ioredis — no other code changes needed.
+ * Cache layer: uses the shared Redis client when REDIS_URL is set (and
+ * reachable), falls back to an in-process Map otherwise or on any Redis
+ * error — reads/writes must never throw or block on a Redis hiccup.
  */
-import { env } from '../config/env';
-import { logger } from './logger';
+import { redisClient } from '../config/redis';
 
 interface Entry { data: unknown; expiresAt: number }
 const memStore = new Map<string, Entry>();
 
-// ── Redis (optional) ──────────────────────────────────────────────────────────
-interface RedisLike {
-  get(key: string): Promise<string | null>;
-  set(key: string, value: string, options: { EX: number }): Promise<unknown>;
-  del(key: string): Promise<unknown>;
-}
-
-let redis: RedisLike | null = null;
-
-if (env.REDIS_URL) {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const tryLoad = () => { try { return require('ioredis'); } catch { return null; } };
-  const Ioredis = tryLoad();
-  if (Ioredis) {
-    redis = new Ioredis(env.REDIS_URL) as RedisLike;
-    logger.info('Cache: Redis connected');
-  } else {
-    logger.warn('Cache: REDIS_URL set but ioredis is not installed — using in-memory fallback');
-  }
-}
-
-// ── Public API ────────────────────────────────────────────────────────────────
 export async function cacheGet(key: string): Promise<unknown | undefined> {
-  if (redis) {
-    const raw = await redis.get(key).catch(() => null);
+  if (redisClient) {
+    const raw = await redisClient.get(key).catch(() => null);
     return raw ? (JSON.parse(raw) as unknown) : undefined;
   }
   const entry = memStore.get(key);
@@ -42,14 +20,21 @@ export async function cacheGet(key: string): Promise<unknown | undefined> {
 }
 
 export async function cacheSet(key: string, data: unknown, ttlMs = 60_000): Promise<void> {
-  if (redis) {
-    await redis.set(key, JSON.stringify(data), { EX: Math.ceil(ttlMs / 1000) }).catch(() => null);
+  if (redisClient) {
+    await redisClient.set(key, JSON.stringify(data), 'EX', Math.ceil(ttlMs / 1000)).catch(() => null);
     return;
   }
   memStore.set(key, { data, expiresAt: Date.now() + ttlMs });
 }
 
 export async function cacheDel(key: string): Promise<void> {
-  if (redis) { await redis.del(key).catch(() => null); return; }
+  if (redisClient) { await redisClient.del(key).catch(() => null); return; }
   memStore.delete(key);
+}
+
+/** Test-only: the in-process fallback (used whenever REDIS_URL isn't set,
+ *  which is how tests run) is a module-level singleton that otherwise leaks
+ *  cached values between tests in the same file/process. */
+export function __clearInMemoryCacheForTests(): void {
+  memStore.clear();
 }

@@ -10,10 +10,11 @@ const PROTECTED_PREFIXES = [
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // pos-auth is a non-httpOnly flag cookie set on login and cleared on logout.
-  // The access token lives only in memory (Zustand); this cookie just tells
-  // the Edge middleware whether a session exists so it can redirect.
-  const isAuth = request.cookies.has('pos-auth');
+  // pos-auth is a non-httpOnly cookie set on login (value = the user's role)
+  // and cleared on logout. The access token lives only in memory (Zustand);
+  // this cookie is the only session/role signal the Edge middleware has.
+  const authRole = request.cookies.get('pos-auth')?.value;
+  const isAuth = !!authRole;
 
   const isAuthRoute = AUTH_ROUTES.includes(pathname);
   const isProtected = PROTECTED_PREFIXES.some((p) => pathname.startsWith(p));
@@ -26,7 +27,9 @@ export function middleware(request: NextRequest) {
 
   if (isAuthRoute && isAuth) {
     const url = request.nextUrl.clone();
-    url.pathname = '/dashboard';
+    // SUPER_ADMIN has no storeId, so the per-store /dashboard 400s on every
+    // KPI/report call for them — send them straight to the page that works.
+    url.pathname = authRole === 'SUPER_ADMIN' ? '/admin' : '/dashboard';
     return NextResponse.redirect(url);
   }
 

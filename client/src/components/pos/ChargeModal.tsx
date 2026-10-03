@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useId, useRef } from 'react';
 import { X, CreditCard, Smartphone, Globe } from 'lucide-react';
 import { useCartStore } from '@/store/cartStore';
 import { useCreateOrder } from '@/hooks/api/useOrders';
@@ -8,6 +8,7 @@ import { useUiStore } from '@/store/uiStore';
 import { useConnectivityStore } from '@/store/connectivityStore';
 import { db, generateOfflineRef } from '@/lib/db';
 import api from '@/lib/axios';
+import { getErrorMessage } from '@/lib/errors';
 import { blockInvalidNumberKey } from '@/lib/numericInput';
 import type { Order, PaymentMethod } from '@/types';
 
@@ -65,6 +66,14 @@ export default function ChargeModal({ open, onClose, onSuccess }: Props) {
   const [paystackUrl, setPaystackUrl] = useState<string | null>(null);
   const [createdOrderId, setCreatedOrderId] = useState<string | null>(null);
   const [pendingQueueSize, setPendingQueueSize] = useState(0);
+  // Generated once per checkout attempt (see the "Reset when modal opens"
+  // effect below) and reused for every retry of THIS attempt — whether the
+  // retry is a manual re-click of Confirm or an automatic fallback to the
+  // offline queue. Reusing the same key means that if an earlier request
+  // actually reached the server before the response was lost, the backend's
+  // idempotency check (and later the sync engine's duplicate handling) will
+  // no-op instead of creating a second order.
+  const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
 
   const total = grandTotal();
 
@@ -90,6 +99,69 @@ export default function ChargeModal({ open, onClose, onSuccess }: Props) {
       setCreatedOrderId(null);
     }
   }, [open, total]);
+
+  // Mint a fresh idempotency key exactly once per checkout attempt — i.e.
+  // each time the modal transitions to open — not on every render where the
+  // cart total happens to be recomputed. It then stays stable (see state
+  // comment above) for as long as this modal instance remains open.
+  useEffect(() => {
+    if (open) setIdempotencyKey(crypto.randomUUID());
+  }, [open]);
+
+  // Dialog accessibility: this is the single most-used interactive surface
+  // in the whole app (every sale opens it), so it needs the same focus
+  // handling as the generic Modal component — move focus in on open,
+  // restore it to whatever triggered the checkout on close, and trap
+  // Tab/Shift+Tab so it never leaks to the dimmed POS page behind it.
+  const titleId = useId();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    triggerRef.current = document.activeElement as HTMLElement | null;
+    const firstFocusable = dialogRef.current?.querySelector<HTMLElement>(
+      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    firstFocusable?.focus();
+
+    return () => {
+      triggerRef.current?.focus();
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    function onKeyDown(e: KeyboardEvent) {
+      // Mid-Paystack-redirect, closing would lose track of an in-flight
+      // payment — the backdrop-click handler below already refuses to close
+      // in that step too, so Escape shouldn't either.
+      if (e.key === 'Escape') {
+        if (step !== 'paystack-waiting') onClose();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+
+      const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusable || focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [open, step, onClose]);
 
   // If user switches to PAYSTACK while offline, revert to CASH
   useEffect(() => {
@@ -123,6 +195,69 @@ export default function ChargeModal({ open, onClose, onSuccess }: Props) {
     return [{ method: method as PaymentMethod, amount: Math.round(total * 100) }];
   };
 
+  // Writes a sale into the IndexedDB-backed offline queue (the same queue
+  // `useSyncEngine` drains) and returns a synthetic Order for the receipt.
+  // Shared by the genuinely-offline path and by the online path's fallback
+  // when a charge request never got a response.
+  const enqueueOfflineOrder = async (
+    clientOrderId: string,
+    payments: { method: PaymentMethod; amount: number }[],
+  ): Promise<Order> => {
+    const offlineReference = await generateOfflineRef();
+
+    await db.pendingOrders.add({
+      clientOrderId,
+      payload: {
+        clientOrderId,
+        offlineReference,
+        createdAtClient: new Date().toISOString(),
+        items: items.map((i) => ({ productId: i.productId, quantity: i.quantity })),
+        discount: Math.round(discountAmount * 100),
+        payments,
+      },
+      retryCount: 0,
+      nextRetryAt: 0,  // eligible immediately when online
+      createdAt: new Date().toISOString(),
+    });
+
+    // Decrement local inventory so stock numbers stay accurate offline
+    for (const item of items) {
+      const inv = await db.inventory.get(item.productId);
+      if (inv) {
+        await db.inventory.put({ ...inv, quantity: inv.quantity - item.quantity });
+      }
+    }
+
+    // Build a synthetic Order for the receipt
+    const subPesewas = Math.round(subtotal() * 100);
+    const taxPesewas = Math.round(taxTotal() * 100);
+    const discPesewas = Math.round(discountAmount * 100);
+    const grandPesewas = Math.round(total * 100);
+
+    return {
+      id: clientOrderId,
+      orderNumber: offlineReference,
+      storeId: '',
+      branchId: '',
+      cashierId: '',
+      status: 'COMPLETED',
+      subtotal: String(subPesewas),
+      taxTotal: String(taxPesewas),
+      discountTotal: String(discPesewas),
+      grandTotal: String(grandPesewas),
+      createdAt: new Date().toISOString(),
+      payments: payments.map((p, i) => ({
+        id: `offline-${i}`,
+        orderId: clientOrderId,
+        method: p.method as PaymentMethod,
+        amount: String(p.amount),
+        paystackReference: null,
+        status: 'SUCCESS',
+        createdAt: new Date().toISOString(),
+      })),
+    };
+  };
+
   const handleOfflineCharge = async () => {
     const queueCount = await db.pendingOrders.count();
     if (queueCount >= OFFLINE_QUEUE_CAP) {
@@ -145,61 +280,8 @@ export default function ChargeModal({ open, onClose, onSuccess }: Props) {
 
     setIsSubmitting(true);
     try {
-      const clientOrderId = crypto.randomUUID();
-      const offlineReference = await generateOfflineRef();
-
-      await db.pendingOrders.add({
-        clientOrderId,
-        payload: {
-          clientOrderId,
-          offlineReference,
-          createdAtClient: new Date().toISOString(),
-          items: items.map((i) => ({ productId: i.productId, quantity: i.quantity })),
-          discount: Math.round(discountAmount * 100),
-          payments,
-        },
-        retryCount: 0,
-        nextRetryAt: 0,  // eligible immediately when online
-        createdAt: new Date().toISOString(),
-      });
-
-      // Decrement local inventory so stock numbers stay accurate offline
-      for (const item of items) {
-        const inv = await db.inventory.get(item.productId);
-        if (inv) {
-          await db.inventory.put({ ...inv, quantity: inv.quantity - item.quantity });
-        }
-      }
-
-      // Build a synthetic Order for the receipt
-      const subPesewas = Math.round(subtotal() * 100);
-      const taxPesewas = Math.round(taxTotal() * 100);
-      const discPesewas = Math.round(discountAmount * 100);
-      const grandPesewas = Math.round(total * 100);
-
-      const syntheticOrder: Order = {
-        id: clientOrderId,
-        orderNumber: offlineReference,
-        storeId: '',
-        branchId: '',
-        cashierId: '',
-        status: 'COMPLETED',
-        subtotal: String(subPesewas),
-        taxTotal: String(taxPesewas),
-        discountTotal: String(discPesewas),
-        grandTotal: String(grandPesewas),
-        createdAt: new Date().toISOString(),
-        payments: payments.map((p, i) => ({
-          id: `offline-${i}`,
-          orderId: clientOrderId,
-          method: p.method as PaymentMethod,
-          amount: String(p.amount),
-          paystackReference: null,
-          status: 'SUCCESS',
-          createdAt: new Date().toISOString(),
-        })),
-      };
-
+      const clientOrderId = idempotencyKey ?? crypto.randomUUID();
+      const syntheticOrder = await enqueueOfflineOrder(clientOrderId, payments);
       onSuccess(syntheticOrder);
     } catch {
       toast('Failed to save offline order — please try again', 'error');
@@ -216,9 +298,12 @@ export default function ChargeModal({ open, onClose, onSuccess }: Props) {
       return;
     }
 
-    // Use a stable UUID as both idempotency key and clientOrderId
-    const clientOrderId = crypto.randomUUID();
+    // Reuse this checkout attempt's stable key rather than minting a new one
+    // per click — see the state comment above for why that matters on retry.
+    const clientOrderId = idempotencyKey ?? crypto.randomUUID();
+    if (!idempotencyKey) setIdempotencyKey(clientOrderId);
 
+    setIsSubmitting(true);
     try {
       const order = await createOrder({
         payload: {
@@ -243,8 +328,37 @@ export default function ChargeModal({ open, onClose, onSuccess }: Props) {
         onSuccess(order);
       }
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { message?: string } } };
-      toast(e.response?.data?.message ?? 'Order failed — check connection', 'error');
+      // A request that got NO response (dropped connection, timeout) is
+      // indistinguishable from one the server actually processed — we can't
+      // safely just show an error and lose the sale, and we can't safely
+      // retry with a fresh key either (that could double-charge). Fall back
+      // to the same offline queue the isOffline path uses, keyed by the same
+      // clientOrderId, so an eventual sync either creates the order or the
+      // backend's idempotency check treats it as a no-op duplicate.
+      const axiosErr = err as { request?: unknown; response?: unknown } | undefined;
+      const isNetworkError = !!axiosErr?.request && !axiosErr?.response;
+
+      if (isNetworkError) {
+        const queueCount = await db.pendingOrders.count();
+        if (queueCount >= OFFLINE_QUEUE_CAP) {
+          toast(
+            'Connection lost and the offline queue is full — please retry once back online.',
+            'error',
+          );
+        } else {
+          try {
+            const syntheticOrder = await enqueueOfflineOrder(clientOrderId, payments);
+            toast('Connection lost — sale saved offline and will sync automatically', 'warning');
+            onSuccess(syntheticOrder);
+          } catch {
+            toast('Order failed — check connection', 'error');
+          }
+        }
+      } else {
+        toast(getErrorMessage(err, 'Order failed — check connection'), 'error');
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -272,11 +386,17 @@ export default function ChargeModal({ open, onClose, onSuccess }: Props) {
       style={{ background: 'rgba(0,0,0,0.55)' }}
       onClick={(e) => { if (e.target === e.currentTarget && step !== 'paystack-waiting') onClose(); }}
     >
-      <div className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl shadow-2xl overflow-hidden">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl shadow-2xl overflow-hidden"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800">
           <div className="flex items-center gap-2">
-            <h2 className="font-semibold text-gray-900 dark:text-gray-100 text-base">
+            <h2 id={titleId} className="font-semibold text-gray-900 dark:text-gray-100 text-base">
               {step === 'paystack-waiting' ? 'Waiting for payment…' : `Charge ${fmt(total)}`}
             </h2>
             {isOffline && (

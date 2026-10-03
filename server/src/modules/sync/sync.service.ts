@@ -1,5 +1,7 @@
 import { prisma } from '../../config/database';
 import { createOrder } from '../orders/orders.service';
+import { assertBranchInStore } from '../inventory/inventory.service';
+import { mapLimit } from '../../utils/concurrency';
 import type { CreateOrderInput } from '../orders/orders.schema';
 import type { BatchSyncInput, CatalogQuery } from './sync.schema';
 
@@ -14,15 +16,24 @@ export interface OrderSyncResult {
   error?: string;
 }
 
+// A branch reconnecting after being offline for a while can queue hundreds
+// of sales; processing them one at a time in a single request risks the
+// request/gateway timing out well before the loop finishes. A bounded
+// concurrency of 5 is safe here for the same reason 5 cashiers checking out
+// at once on live terminals already is: createOrder's stock decrement
+// (guarded updateMany) and order-number generation (atomic UPDATE...
+// RETURNING on Branch.nextOrderSeq) are both already race-safe per-call, and
+// a duplicate clientOrderId racing itself within the batch falls into
+// createOrder's existing P2002-loses-the-race handling.
+const SYNC_CONCURRENCY = 5;
+
 export async function syncOrders(
   storeId: string,
   cashierId: string,
   branchId: string,
   input: BatchSyncInput,
 ): Promise<OrderSyncResult[]> {
-  const results: OrderSyncResult[] = [];
-
-  for (const orderData of input.orders) {
+  return mapLimit(input.orders, SYNC_CONCURRENCY, async (orderData): Promise<OrderSyncResult> => {
     const clientOrderId = orderData.clientOrderId!;
     try {
       const { order, duplicate } = await createOrder(
@@ -32,23 +43,21 @@ export async function syncOrders(
         orderData as CreateOrderInput,
       );
 
-      results.push({
+      return {
         clientOrderId,
         status: duplicate ? 'duplicate' : 'created',
         orderId: order.id,
         orderNumber: order.orderNumber,
         stockDiscrepancy: order.stockDiscrepancy,
-      });
+      };
     } catch (err) {
-      results.push({
+      return {
         clientOrderId,
         status: 'failed',
         error: err instanceof Error ? err.message : 'Unknown error',
-      });
+      };
     }
-  }
-
-  return results;
+  });
 }
 
 // ─── Catalog snapshot ─────────────────────────────────────────────────────────
@@ -62,11 +71,19 @@ export async function getCatalog(
 ) {
   const since = query.since ? new Date(query.since) : undefined;
 
-  // BRANCH_MANAGER / CASHIER are scoped to their own branch
+  // BRANCH_MANAGER / CASHIER are scoped to their own branch. STORE_ADMIN /
+  // SUPER_ADMIN may pass an explicit branchId — but it must actually belong
+  // to this store, or a request for another tenant's branch id would return
+  // that tenant's live stock quantities (branchId alone was previously
+  // trusted with no ownership check).
   const effectiveBranchId =
     role === 'BRANCH_MANAGER' || role === 'CASHIER'
       ? userBranchId
       : query.branchId;
+
+  if (effectiveBranchId) {
+    await assertBranchInStore(storeId, effectiveBranchId);
+  }
 
   // Date filter for delta sync
   const sinceFilter = since ? { updatedAt: { gt: since } } : {};

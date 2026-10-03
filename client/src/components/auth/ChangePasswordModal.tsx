@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Check, Circle } from 'lucide-react';
 import { useChangePassword } from '@/hooks/api/useUsers';
 import { useUiStore } from '@/store/uiStore';
+import { getErrorMessage } from '@/lib/errors';
 import PasswordInput from '@/components/ui/PasswordInput';
 
 interface Props {
@@ -48,8 +49,7 @@ export default function ChangePasswordModal({ forced, onClose, onSuccess }: Prop
       toast('Password updated', 'success');
       onSuccess();
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { message?: string } } };
-      setError(e.response?.data?.message ?? 'Failed to change password');
+      setError(getErrorMessage(err, 'Failed to change password'));
     }
   };
 
@@ -76,7 +76,7 @@ export default function ChangePasswordModal({ forced, onClose, onSuccess }: Prop
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-              {forced ? 'Temporary password' : 'Current password'}
+              {forced ? 'Temporary password' : 'Current password'} <span className="text-red-500">*</span>
             </label>
             <PasswordInput
               required autoComplete="current-password"
@@ -85,7 +85,7 @@ export default function ChangePasswordModal({ forced, onClose, onSuccess }: Prop
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">New password</label>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">New password <span className="text-red-500">*</span></label>
             <PasswordInput
               required autoComplete="new-password"
               value={newPassword} onChange={(e) => setNewPassword(e.target.value)}
@@ -100,7 +100,7 @@ export default function ChangePasswordModal({ forced, onClose, onSuccess }: Prop
             </ul>
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Confirm new password</label>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Confirm new password <span className="text-red-500">*</span></label>
             <PasswordInput
               required autoComplete="new-password"
               value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)}

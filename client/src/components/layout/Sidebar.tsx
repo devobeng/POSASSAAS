@@ -1,12 +1,35 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuthStore } from '@/store/authStore';
 import { useUiStore } from '@/store/uiStore';
 import ChangePasswordModal from '@/components/auth/ChangePasswordModal';
 import type { Role } from '@/types';
+
+// Below this width the sidebar becomes an overlay drawer (fixed, over the
+// content, with a dismiss backdrop) instead of an in-flow flex sibling that
+// permanently shrinks the content column — at phone/small-tablet widths
+// there isn't enough room to share space with a 224px-wide nav column, and
+// the previous single `sidebarOpen` boolean applied the exact same
+// desktop-style push layout at every width, cutting off buttons and
+// truncating table content until a user discovered the hamburger toggle.
+const MOBILE_BREAKPOINT = 1024;
+
+function useIsMobile(): boolean {
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const mql = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`);
+    setIsMobile(mql.matches);
+    const update = () => setIsMobile(mql.matches);
+    mql.addEventListener('change', update);
+    return () => mql.removeEventListener('change', update);
+  }, []);
+
+  return isMobile;
+}
 
 interface NavItem {
   href: string;
@@ -102,8 +125,22 @@ export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { user, clearAuth } = useAuthStore();
-  const { sidebarOpen } = useUiStore();
+  const { sidebarOpen, setSidebarOpen } = useUiStore();
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const isMobile = useIsMobile();
+
+  // The store defaults sidebarOpen to true (correct for desktop, where it's
+  // an in-flow column meant to stay visible). On a phone/small tablet that
+  // same default would open the overlay drawer immediately on every first
+  // load, covering the whole screen — force it closed the first time this
+  // renders as a mobile layout instead of only after a manual toggle.
+  const [hasAppliedMobileDefault, setHasAppliedMobileDefault] = useState(false);
+  useEffect(() => {
+    if (isMobile && !hasAppliedMobileDefault) {
+      setSidebarOpen(false);
+      setHasAppliedMobileDefault(true);
+    }
+  }, [isMobile, hasAppliedMobileDefault, setSidebarOpen]);
 
   const visibleItems = NAV_ITEMS.filter(
     (item) => user && item.roles.includes(user.role),
@@ -114,62 +151,83 @@ export default function Sidebar() {
     router.push('/login');
   };
 
+  // On mobile the drawer should get out of the way as soon as a destination
+  // is picked — unlike desktop, where the nav column stays put and there's
+  // no reason to auto-hide it after every navigation.
+  const handleNavClick = () => {
+    if (isMobile) setSidebarOpen(false);
+  };
+
   return (
-    <aside
-      className={`flex flex-col bg-white dark:bg-gray-900 border-r border-gray-100 dark:border-gray-800 shrink-0 transition-all duration-200 ${
-        sidebarOpen ? 'w-56' : 'w-0 overflow-hidden'
-      }`}
-    >
-      {/* Logo */}
-      <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800">
-        <span className="text-lg font-bold text-primary-600">POS SaaS</span>
-      </div>
-
-      {/* Nav */}
-      <nav className="flex-1 py-4 px-3 space-y-0.5 overflow-y-auto">
-        {visibleItems.map((item) => {
-          const active = pathname === item.href || pathname.startsWith(item.href + '/');
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${
-                active
-                  ? 'bg-primary-50 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400'
-                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-100'
-              }`}
-            >
-              {item.icon}
-              {item.label}
-            </Link>
-          );
-        })}
-      </nav>
-
-      {/* User footer */}
-      <div className="p-4 border-t border-gray-100 dark:border-gray-800">
-        <p className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{user?.name}</p>
-        <p className="text-xs text-gray-400 truncate mb-3">{user?.email ?? user?.phone}</p>
-        <button
-          onClick={() => setChangePasswordOpen(true)}
-          className="w-full text-xs text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 text-left font-medium mb-2"
-        >
-          Change password
-        </button>
-        <button
-          onClick={handleLogout}
-          className="w-full text-xs text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 text-left font-medium"
-        >
-          Sign out
-        </button>
-      </div>
-
-      {changePasswordOpen && (
-        <ChangePasswordModal
-          onClose={() => setChangePasswordOpen(false)}
-          onSuccess={() => setChangePasswordOpen(false)}
+    <>
+      {isMobile && sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/50"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
         />
       )}
-    </aside>
+      <aside
+        className={`flex flex-col bg-white dark:bg-gray-900 border-r border-gray-100 dark:border-gray-800 shrink-0 transition-all duration-200 ${
+          isMobile
+            ? `fixed inset-y-0 left-0 z-40 w-64 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`
+            : sidebarOpen
+              ? 'w-56'
+              : 'w-0 overflow-hidden'
+        }`}
+      >
+        {/* Logo */}
+        <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+          <span className="text-lg font-bold text-primary-600">POS SaaS</span>
+        </div>
+
+        {/* Nav */}
+        <nav className="flex-1 py-4 px-3 space-y-0.5 overflow-y-auto">
+          {visibleItems.map((item) => {
+            const active = pathname === item.href || pathname.startsWith(item.href + '/');
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={handleNavClick}
+                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${
+                  active
+                    ? 'bg-primary-50 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400'
+                    : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-100'
+                }`}
+              >
+                {item.icon}
+                {item.label}
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* User footer */}
+        <div className="p-4 border-t border-gray-100 dark:border-gray-800">
+          <p className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{user?.name}</p>
+          <p className="text-xs text-gray-400 truncate mb-3">{user?.email ?? user?.phone}</p>
+          <button
+            onClick={() => setChangePasswordOpen(true)}
+            className="w-full text-xs text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 text-left font-medium mb-2"
+          >
+            Change password
+          </button>
+          <button
+            onClick={handleLogout}
+            className="w-full text-xs text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 text-left font-medium"
+          >
+            Sign out
+          </button>
+        </div>
+
+        {changePasswordOpen && (
+          <ChangePasswordModal
+            onClose={() => setChangePasswordOpen(false)}
+            onSuccess={() => setChangePasswordOpen(false)}
+          />
+        )}
+      </aside>
+    </>
   );
 }

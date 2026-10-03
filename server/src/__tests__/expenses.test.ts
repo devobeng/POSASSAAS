@@ -324,3 +324,87 @@ describe('P&L math correctness', () => {
     expect(res.status).toBe(403);
   });
 });
+
+// ─── POST/PATCH /api/v1/expenses — cross-tenant categoryId guard ──────────────
+
+describe('Expense categoryId is validated against the caller\'s store', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const OTHER_STORE_CATEGORY_ID = 'ckabcdefgh0000other0store';
+
+  const validBody = {
+    categoryId: OTHER_STORE_CATEGORY_ID,
+    amount: 5000,
+    description: 'Office supplies',
+    expenseDate: '2026-07-01',
+  };
+
+  it('POST /api/v1/expenses rejects a categoryId belonging to another store → 404', async () => {
+    prisma.expenseCategory.findFirst.mockResolvedValueOnce(null); // not found in this store
+
+    const res = await request(app)
+      .post('/api/v1/expenses')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send(validBody);
+
+    expect(res.status).toBe(404);
+    expect(prisma.expenseCategory.findFirst).toHaveBeenCalledWith({
+      where: { id: OTHER_STORE_CATEGORY_ID, storeId: 'store-1' },
+      select: { id: true },
+    });
+    expect(prisma.expense.create).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/v1/expenses succeeds when the category belongs to this store → 201', async () => {
+    prisma.expenseCategory.findFirst.mockResolvedValueOnce({ id: OTHER_STORE_CATEGORY_ID });
+    prisma.expense.create.mockResolvedValueOnce({ id: 'exp-new', status: 'APPROVED' });
+
+    const res = await request(app)
+      .post('/api/v1/expenses')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send(validBody);
+
+    expect(res.status).toBe(201);
+    expect(prisma.expense.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('PATCH /api/v1/expenses/:id rejects a categoryId belonging to another store → 404', async () => {
+    prisma.expense.findFirst.mockResolvedValueOnce(PENDING_EXPENSE);
+    prisma.expenseCategory.findFirst.mockResolvedValueOnce(null);
+
+    const res = await request(app)
+      .patch('/api/v1/expenses/exp-1')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ categoryId: OTHER_STORE_CATEGORY_ID });
+
+    expect(res.status).toBe(404);
+    expect(prisma.expense.update).not.toHaveBeenCalled();
+  });
+});
+
+// ─── GET /api/v1/expenses?format=csv — full range, not just one page ─────────
+
+describe('GET /api/v1/expenses CSV export', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('exports every matching row, not just the display page size', async () => {
+    // 250 rows — more than listExpensesSchema's max page limit (100) — to
+    // prove the CSV path isn't going through the paginated query at all.
+    const manyRows = Array.from({ length: 250 }, (_, i) => ({ ...PENDING_EXPENSE, id: `exp-${i}` }));
+    prisma.expense.findMany.mockResolvedValueOnce(manyRows);
+
+    const res = await request(app)
+      .get('/api/v1/expenses')
+      .query({ format: 'csv' })
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    // No skip/take on the export query — the whole matching range comes back.
+    expect(prisma.expense.findMany).toHaveBeenCalledWith(
+      expect.not.objectContaining({ skip: expect.anything(), take: expect.anything() }),
+    );
+    // count() is only needed for pagination metadata — the CSV path has no
+    // page/limit to report, so it must never call it.
+    expect(prisma.expense.count).not.toHaveBeenCalled();
+  });
+});

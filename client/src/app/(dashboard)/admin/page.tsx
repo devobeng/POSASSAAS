@@ -5,6 +5,7 @@ import { useAuthStore } from '@/store/authStore';
 import { redirect } from 'next/navigation';
 import { useAdminStores, usePlatformStats, useSuspendStore, useActivateStore, useSubscriptionPlans, useCreatePlan, useDeletePlan } from '@/hooks/api/useAdmin';
 import { useUiStore } from '@/store/uiStore';
+import { getErrorMessage } from '@/lib/errors';
 import DataTable, { type Column } from '@/components/ui/DataTable';
 import Badge from '@/components/ui/Badge';
 import Modal from '@/components/ui/Modal';
@@ -36,9 +37,9 @@ export default function AdminPage() {
   const [deletePlanId, setDeletePlanId] = useState<string | null>(null);
   const [planForm, setPlanForm] = useState({ name: '', price: '', maxBranches: '5', maxUsers: '20' });
 
-  const { data: storesData, isLoading: storesLoading } = useAdminStores({ page, limit: 20 });
+  const { data: storesData, isLoading: storesLoading, isError: storesError, error: storesErrorObj, refetch: refetchStores } = useAdminStores({ page, limit: 20 });
   const { data: stats } = usePlatformStats();
-  const { data: plans, isLoading: plansLoading } = useSubscriptionPlans();
+  const { data: plans, isLoading: plansLoading, isError: plansError, error: plansErrorObj, refetch: refetchPlans } = useSubscriptionPlans();
   const { mutate: suspendStore, isPending: suspending } = useSuspendStore(suspendId ?? '');
   const { mutate: activateStore, isPending: activating } = useActivateStore(activateId ?? '');
   const { mutateAsync: createPlan, isPending: creatingPlan } = useCreatePlan();
@@ -47,7 +48,12 @@ export default function AdminPage() {
   const storeColumns: Column<StoreRow>[] = [
     { key: 'name', header: 'Store', render: (s) => <div><p className="font-medium">{s.name}</p><p className="text-xs text-gray-400">{s.slug}</p></div> },
     { key: 'plan', header: 'Plan', render: (s) => <span className="text-sm capitalize">{s.subscriptionPlan?.name.toLowerCase() ?? 'free'}</span> },
-    { key: 'status', header: 'Status', render: (s) => <Badge label={s.subscriptionStatus} variant={s.subscriptionStatus === 'ACTIVE' ? 'success' : s.subscriptionStatus === 'PAST_DUE' ? 'warning' : 'neutral'} /> },
+    { key: 'status', header: 'Status', render: (s) => <Badge label={s.subscriptionStatus} variant={
+      s.subscriptionStatus === 'ACTIVE' ? 'success'
+      : s.subscriptionStatus === 'SUSPENDED' ? 'error'
+      : s.subscriptionStatus === 'INACTIVE' ? 'warning'
+      : 'neutral'
+    } /> },
     { key: 'users', header: 'Users', render: (s) => <span className="text-sm">{s._count?.users ?? 0}</span> },
     { key: 'branches', header: 'Branches', render: (s) => <span className="text-sm">{s._count?.branches ?? 0}</span> },
     {
@@ -90,8 +96,8 @@ export default function AdminPage() {
       toast('Plan created', 'success');
       setPlanDrawer(false);
       setPlanForm({ name: '', price: '', maxBranches: '5', maxUsers: '20' });
-    } catch {
-      toast('Failed to create plan', 'error');
+    } catch (err: unknown) {
+      toast(getErrorMessage(err, 'Failed to create plan'), 'error');
     }
   };
 
@@ -133,6 +139,9 @@ export default function AdminPage() {
           columns={storeColumns}
           data={storesData?.items ?? []}
           isLoading={storesLoading}
+          isError={storesError}
+          error={storesErrorObj}
+          onRetry={refetchStores}
           keyExtractor={(s) => s.id}
           pagination={storesData?.meta}
           onPageChange={setPage}
@@ -149,6 +158,9 @@ export default function AdminPage() {
             columns={planColumns}
             data={plans ?? []}
             isLoading={plansLoading}
+            isError={plansError}
+            error={plansErrorObj}
+            onRetry={refetchPlans}
             keyExtractor={(p) => p.id}
             emptyMessage="No subscription plans"
           />
@@ -165,8 +177,15 @@ export default function AdminPage() {
         destructive
         isLoading={suspending}
         onConfirm={() => suspendStore(undefined as never, {
-          onSuccess: () => { setSuspendId(null); toast('Store suspended', 'success'); },
-          onError: () => toast('Failed to suspend', 'error'),
+          onSuccess: (result) => {
+            setSuspendId(null);
+            if (result?.billingSyncFailed) {
+              toast('Store suspended — but Paystack billing could not be paused; verify in the Paystack dashboard', 'warning');
+            } else {
+              toast('Store suspended', 'success');
+            }
+          },
+          onError: (err: unknown) => toast(getErrorMessage(err, 'Failed to suspend store'), 'error'),
         })}
       />
 
@@ -179,8 +198,15 @@ export default function AdminPage() {
         confirmLabel="Activate"
         isLoading={activating}
         onConfirm={() => activateStore(undefined as never, {
-          onSuccess: () => { setActivateId(null); toast('Store activated', 'success'); },
-          onError: () => toast('Failed to activate', 'error'),
+          onSuccess: (result) => {
+            setActivateId(null);
+            if (result?.billingSyncFailed) {
+              toast('Store activated — but Paystack billing could not be resumed; verify in the Paystack dashboard', 'warning');
+            } else {
+              toast('Store activated', 'success');
+            }
+          },
+          onError: (err: unknown) => toast(getErrorMessage(err, 'Failed to activate store'), 'error'),
         })}
       />
 
@@ -195,7 +221,7 @@ export default function AdminPage() {
         isLoading={deletingPlan}
         onConfirm={() => deletePlan(undefined, {
           onSuccess: () => { setDeletePlanId(null); toast('Plan deleted', 'success'); },
-          onError: () => toast('Failed to delete', 'error'),
+          onError: (err: unknown) => toast(getErrorMessage(err, 'Failed to delete plan'), 'error'),
         })}
       />
 

@@ -1,11 +1,35 @@
 'use client';
 
-import { useState, useMemo, type RefObject, type KeyboardEvent } from 'react';
+import { useState, useMemo, useRef, useEffect, type RefObject, type KeyboardEvent } from 'react';
 import { Search } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useCartStore } from '@/store/cartStore';
 import { db, type CachedProduct } from '@/lib/db';
 import ProductCard from './ProductCard';
+
+// Mirrors the grid's own Tailwind breakpoints (grid-cols-2 sm:grid-cols-3
+// xl:grid-cols-4) — the virtualizer below needs the actual column count as a
+// number to chunk products into rows, since it virtualizes by row, not by
+// individual card.
+function useResponsiveColumnCount(): number {
+  const [columns, setColumns] = useState(2);
+
+  useEffect(() => {
+    const sm = window.matchMedia('(min-width: 640px)');
+    const xl = window.matchMedia('(min-width: 1280px)');
+    const update = () => setColumns(xl.matches ? 4 : sm.matches ? 3 : 2);
+    update();
+    sm.addEventListener('change', update);
+    xl.addEventListener('change', update);
+    return () => {
+      sm.removeEventListener('change', update);
+      xl.removeEventListener('change', update);
+    };
+  }, []);
+
+  return columns;
+}
 
 // Shape usable by cartStore.addItem (mirrors the Product type cartStore expects)
 function toProduct(p: CachedProduct) {
@@ -32,6 +56,8 @@ interface Props {
 export default function ProductGrid({ searchRef }: Props) {
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const columnCount = useResponsiveColumnCount();
 
   const addItem = useCartStore((s) => s.addItem);
   const cartItems = useCartStore((s) => s.items);
@@ -81,6 +107,29 @@ export default function ProductGrid({ searchRef }: Props) {
         (p.barcode && p.barcode.includes(q)),
     );
   }, [allProducts, search]);
+
+  // Virtualized by ROW, not by card — a large wholesale/pharmacy catalog
+  // (thousands of SKUs) rendering every card into the DOM at once is what
+  // causes visible jank on lower-end POS tablets. Grouping into rows of
+  // `columnCount` lets the existing card grid markup stay unchanged per row.
+  const rows = useMemo(() => {
+    const chunks: (typeof filtered)[] = [];
+    for (let i = 0; i < filtered.length; i += columnCount) {
+      chunks.push(filtered.slice(i, i + columnCount));
+    }
+    return chunks;
+  }, [filtered, columnCount]);
+
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    // Card is aspect-[3/4] plus the grid gap — a rough starting estimate;
+    // measureElement (below) corrects it to the real rendered height per
+    // row, which is what actually matters since card height depends on the
+    // column count and the container's own width.
+    estimateSize: () => 220,
+    overscan: 3,
+  });
 
   const handleSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter') return;
@@ -138,7 +187,7 @@ export default function ProductGrid({ searchRef }: Props) {
       </div>
 
       {/* Grid */}
-      <div className="flex-1 overflow-y-auto p-3">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3">
         {!isLoaded ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-2">
             {Array.from({ length: 12 }).map((_, i) => (
@@ -158,15 +207,31 @@ export default function ProductGrid({ searchRef }: Props) {
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-2">
-            {filtered.map((product) => (
-              <ProductCard
-                key={product.id}
-                product={toProduct(product)}
-                stock={stockMap.get(product.id) ?? 0}
-                cartQty={cartQtyMap.get(product.id) ?? 0}
-                onAdd={() => addItem(toProduct(product))}
-              />
+          <div style={{ height: rowVirtualizer.getTotalSize(), position: 'relative' }}>
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => (
+              <div
+                key={virtualRow.key}
+                data-index={virtualRow.index}
+                ref={rowVirtualizer.measureElement}
+                className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-2 pb-2"
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  transform: `translateY(${virtualRow.start}px)`,
+                }}
+              >
+                {rows[virtualRow.index].map((product) => (
+                  <ProductCard
+                    key={product.id}
+                    product={toProduct(product)}
+                    stock={stockMap.get(product.id) ?? 0}
+                    cartQty={cartQtyMap.get(product.id) ?? 0}
+                    onAdd={() => addItem(toProduct(product))}
+                  />
+                ))}
+              </div>
             ))}
           </div>
         )}

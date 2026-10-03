@@ -43,17 +43,20 @@ export const listExpenses = asyncHandler(async (req: Request, res: Response) => 
   const { sub: userId, role, branchId: userBranchId } = req.user!;
   void userId;
   const query = listExpensesSchema.parse(req.query);
-  const result = await svc.listExpenses(req.storeId!, userBranchId, role, query);
 
   if (query.format === 'csv') {
-    sendCSV(res, result.items as unknown as Record<string, unknown>[], 'expenses');
-  } else {
-    sendSuccess(res, result);
+    const items = await svc.exportExpenses(req.storeId!, userBranchId, role, query);
+    sendCSV(res, items as unknown as Record<string, unknown>[], 'expenses');
+    return;
   }
+
+  const result = await svc.listExpenses(req.storeId!, userBranchId, role, query);
+  sendSuccess(res, result);
 });
 
 export const getExpense = asyncHandler(async (req: Request, res: Response) => {
-  const expense = await svc.getExpense(req.storeId!, req.params.id);
+  const { role, branchId } = req.user!;
+  const expense = await svc.getExpense(req.storeId!, req.params.id, branchId, role);
   sendSuccess(res, expense);
 });
 

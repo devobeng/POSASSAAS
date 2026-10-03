@@ -62,7 +62,11 @@ export class BluetoothTransport {
     if (!this.char) throw new Error('BT printer not connected');
     // BLE requires chunking since MTU is typically 20–512 bytes
     for (let offset = 0; offset < data.length; offset += CHUNK_SIZE) {
-      const chunk = data.slice(offset, offset + CHUNK_SIZE);
+      const slice = data.slice(offset, offset + CHUNK_SIZE);
+      // Copied into a plain ArrayBuffer — see agent.ts for why a bare
+      // Uint8Array doesn't satisfy BufferSource under this TS lib version.
+      const chunk = new ArrayBuffer(slice.byteLength);
+      new Uint8Array(chunk).set(slice);
       await this.char.writeValueWithoutResponse(chunk);
       // Small delay between chunks to avoid buffer overflow on slower printers
       await new Promise((r) => setTimeout(r, 20));

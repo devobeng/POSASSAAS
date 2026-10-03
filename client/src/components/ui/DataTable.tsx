@@ -1,6 +1,7 @@
 'use client';
 
 import type { PaginationMeta } from '@/types';
+import ErrorState from './ErrorState';
 
 export interface Column<T> {
   key: string;
@@ -13,6 +14,9 @@ interface Props<T> {
   columns: Column<T>[];
   data: T[];
   isLoading?: boolean;
+  isError?: boolean;
+  error?: unknown;
+  onRetry?: () => void;
   keyExtractor: (row: T) => string;
   pagination?: PaginationMeta;
   onPageChange?: (page: number) => void;
@@ -30,6 +34,9 @@ export default function DataTable<T>({
   columns,
   data,
   isLoading,
+  isError,
+  error,
+  onRetry,
   keyExtractor,
   pagination,
   onPageChange,
@@ -86,6 +93,12 @@ export default function DataTable<T>({
                   ))}
                 </tr>
               ))
+            ) : isError ? (
+              <tr>
+                <td colSpan={columns.length} className="px-4 py-4">
+                  <ErrorState error={error} message="Couldn't load data" onRetry={onRetry} />
+                </td>
+              </tr>
             ) : data.length === 0 ? (
               <tr>
                 <td colSpan={columns.length} className="px-4 py-16 text-center">

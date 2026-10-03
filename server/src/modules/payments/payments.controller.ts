@@ -37,21 +37,29 @@ export const handleWebhook = asyncHandler(async (req: Request, res: Response) =>
     return;
   }
 
-  // Respond 200 immediately — Paystack considers any other status a failure and retries
-  res.sendStatus(200);
-
-  // Process async without blocking response
   let event: paymentsService.WebhookEvent;
   try {
     const rawStr = (req.body as Buffer).toString('utf-8');
     event = JSON.parse(rawStr) as paymentsService.WebhookEvent;
   } catch (err) {
     logger.error('Failed to parse webhook body', err);
+    // Malformed body from a signed Paystack request isn't something a retry
+    // fixes — ack so Paystack doesn't hammer us with the same bad payload.
+    res.sendStatus(200);
     return;
   }
 
-  // Intentionally not awaited — fire and forget
-  paymentsService.processWebhookEvent(event).catch((err) => {
+  // Persist the raw event BEFORE acking — Paystack only retries a delivery
+  // that doesn't get a 200, so once we ack, a crash before processing
+  // finishes would otherwise lose this event forever. This row is what lets
+  // a stuck event be found and replayed after the fact.
+  const eventRecord = await paymentsService.recordWebhookEvent(event);
+
+  // Respond 200 immediately — Paystack considers any other status a failure and retries
+  res.sendStatus(200);
+
+  // Process async without blocking response
+  paymentsService.processWebhookEvent(event, eventRecord.id).catch((err) => {
     logger.error('Webhook processing error', err);
   });
 });
@@ -59,10 +67,10 @@ export const handleWebhook = asyncHandler(async (req: Request, res: Response) =>
 // ─── GET /api/v1/payments/verify/:reference ───────────────────────────────────
 
 export const verifyPayment = asyncHandler(async (req: Request, res: Response) => {
-  const { storeId: userStoreId } = req.user!;
+  const { sub: userId, storeId: userStoreId } = req.user!;
   const storeId = (req.storeId ?? userStoreId)!;
 
-  const result = await paymentsService.verifyPayment(req.params.reference, storeId);
+  const result = await paymentsService.verifyPayment(req.params.reference, storeId, userId);
   sendSuccess(res, result, 'Payment verified');
 });
 
@@ -84,7 +92,14 @@ export const subscribe = asyncHandler(async (req: Request, res: Response) => {
     callbackUrl,
   );
 
-  sendSuccess(res, txInit, 'Subscription initialized — complete payment to activate');
+  const message =
+    'alreadyActive' in txInit
+      ? 'You are already on this plan'
+      : txInit.free
+        ? 'Free plan activated'
+        : 'Subscription initialized — complete payment to activate';
+
+  sendSuccess(res, txInit, message);
 });
 
 // ─── GET /api/v1/payments/subscription ────────────────────────────────────────

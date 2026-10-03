@@ -13,6 +13,7 @@ jest.mock('../config/database', () => ({
       update: jest.fn(),
       count: jest.fn(),
     },
+    branch: { findFirst: jest.fn() },
     auditLog: { create: jest.fn() },
     $connect: jest.fn(),
     $disconnect: jest.fn(),
@@ -27,6 +28,7 @@ const { prisma } = require('../config/database') as {
       findUnique: jest.Mock; findFirst: jest.Mock; findMany: jest.Mock;
       create: jest.Mock; update: jest.Mock; count: jest.Mock;
     };
+    branch: { findFirst: jest.Mock };
     auditLog: { create: jest.Mock };
   };
 };
@@ -108,6 +110,7 @@ describe('POST /api/v1/users — role hierarchy', () => {
     prisma.store.findUnique.mockResolvedValue({ subscriptionPlan: { maxUsers: 50 } });
     prisma.user.count.mockResolvedValue(3);
     prisma.user.findFirst.mockResolvedValue(null);
+    prisma.branch.findFirst.mockResolvedValue({ id: BRANCH_ID });
     prisma.user.create.mockResolvedValue({
       id: 'user-mgr',
       email: 'mgr@test.com',
@@ -128,6 +131,24 @@ describe('POST /api/v1/users — role hierarchy', () => {
 
     expect(res.status).toBe(201);
     expect(res.body.data.tempPassword).toBeDefined();
+  });
+
+  it('rejects a branchId that does not belong to this store → 404', async () => {
+    // STORE_ADMIN supplies branchId directly (unlike BRANCH_MANAGER, whose
+    // branchId is always forced to their own) — must be validated, or a user
+    // could be assigned to another tenant's branch entirely.
+    prisma.store.findUnique.mockResolvedValue({ subscriptionPlan: { maxUsers: 50 } });
+    prisma.user.count.mockResolvedValue(3);
+    prisma.user.findFirst.mockResolvedValue(null);
+    prisma.branch.findFirst.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post('/api/v1/users')
+      .set('Authorization', `Bearer ${token('STORE_ADMIN')}`)
+      .send({ phone: '+233200000013', email: 'x@test.com', name: 'Xavier', role: 'CASHIER', branchId: 'other-store-branch' });
+
+    expect(res.status).toBe(404);
+    expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
   it('returns 409 when email or phone already exists', async () => {

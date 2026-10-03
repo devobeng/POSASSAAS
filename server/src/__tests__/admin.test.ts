@@ -134,7 +134,7 @@ describe('Admin store status management', () => {
     prisma.store.update.mockResolvedValue({
       id: 'store-1',
       name: 'Demo Store',
-      subscriptionStatus: 'INACTIVE',
+      subscriptionStatus: 'SUSPENDED',
     });
     prisma.auditLog.create.mockResolvedValue({});
 
@@ -143,9 +143,9 @@ describe('Admin store status management', () => {
       .set('Authorization', `Bearer ${superAdminToken}`);
 
     expect(res.status).toBe(200);
-    expect(res.body.data.subscriptionStatus).toBe('INACTIVE');
+    expect(res.body.data.subscriptionStatus).toBe('SUSPENDED');
     expect(prisma.store.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { subscriptionStatus: 'INACTIVE' } }),
+      expect.objectContaining({ data: { subscriptionStatus: 'SUSPENDED' } }),
     );
   });
 

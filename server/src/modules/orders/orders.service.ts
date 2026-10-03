@@ -2,6 +2,8 @@ import { Prisma, OrderStatus, PaymentStatus, StockMovementType } from '@prisma/c
 import { prisma } from '../../config/database';
 import { AppError } from '../../middleware/error';
 import { auditLog } from '../../utils/audit';
+import { roundMoney } from '../../utils/money';
+import { logger } from '../../utils/logger';
 import type { CreateOrderInput, OrderListQuery } from './orders.schema';
 
 // ─── Shared type ─────────────────────────────────────────────────────────────
@@ -33,7 +35,14 @@ export async function createOrder(
   input: CreateOrderInput,
 ): Promise<CreateOrderResult> {
   const { items, discount, payments, clientOrderId, createdAtClient, offlineReference } = input;
-  const isOffline = Boolean(clientOrderId);
+  // offlineReference (not clientOrderId) is the real "this sale happened
+  // while disconnected" signal — only ChargeModal's offline-queue path ever
+  // sets it. clientOrderId alone is just a dedup key: the online charge path
+  // sends one too (so double-tapping "Charge" is safe), but a live, connected
+  // charge must still go through strict, guarded stock validation below, not
+  // the oversell-tolerant upsert path meant for orders queued without live
+  // stock visibility.
+  const isOffline = Boolean(offlineReference);
 
   // ── Idempotency ──────────────────────────────────────────────────────────────
   if (clientOrderId) {
@@ -66,25 +75,56 @@ export async function createOrder(
     const product = productMap.get(item.productId)!;
     const unitPrice = Number(product.sellingPrice);
     const taxRate = Number(product.taxRate);
-    const lineSubtotal = unitPrice * item.quantity;
-    const lineTax = Math.round(lineSubtotal * (taxRate / 100));
+    const lineSubtotal = roundMoney(unitPrice * item.quantity);
+    const lineTax = roundMoney(lineSubtotal * (taxRate / 100));
     subtotal += lineSubtotal;
     taxTotal += lineTax;
     return {
       productId: product.id,
       productName: product.name,
       unitPrice: new Prisma.Decimal(unitPrice),
+      // Snapshotted alongside unitPrice/productName — profit reports must
+      // reflect the cost at time of sale, not whatever it is today.
+      costPrice: new Prisma.Decimal(Number(product.costPrice)),
       quantity: item.quantity,
       lineTotal: new Prisma.Decimal(lineSubtotal + lineTax),
     };
   });
 
-  const discountAmount = discount ?? 0;
-  const grandTotal = Math.max(0, subtotal + taxTotal - discountAmount);
+  subtotal = roundMoney(subtotal);
+  taxTotal = roundMoney(taxTotal);
+  const discountAmount = roundMoney(discount ?? 0);
+  const preDiscountTotal = roundMoney(subtotal + taxTotal);
+
+  // A discount larger than the order itself has no legitimate reading — it
+  // was previously silently clamped to a $0 grandTotal (Math.max(0, ...)
+  // below), which let a cashier "sweetheart" any sale down to free with no
+  // error and, worse, no trace of how large the attempted discount actually
+  // was. Reject it outright instead; a 100% discount (comp/promo) is still
+  // allowed, only an OVER-100% one is rejected.
+  if (discountAmount > preDiscountTotal) {
+    throw new AppError(
+      `Discount (${discountAmount}) cannot exceed the order total (${preDiscountTotal})`,
+      400,
+    );
+  }
+
+  const grandTotal = roundMoney(Math.max(0, preDiscountTotal - discountAmount));
+
+  // This route is CASHIER-only (see orders.routes.ts) — a discount at or
+  // above half the order's value is exactly the "sweethearting" pattern a
+  // manager should be able to notice and review, even though blocking
+  // checkout on it outright would be too disruptive for legitimate large
+  // promos/comps. Audited (with the real order id) once the order exists
+  // below, instead of silently allowing it through unseen.
+  const isLargeDiscount = preDiscountTotal > 0 && discountAmount / preDiscountTotal >= 0.5;
 
   // ── 3. Validate payment sum ──────────────────────────────────────────────────
-  const paymentSum = payments.reduce((acc, p) => acc + p.amount, 0);
-  if (Math.abs(Math.round(paymentSum) - Math.round(grandTotal)) > 1) {
+  // Tolerance is half a cent/pesewa — enough to absorb floating-point drift
+  // from the money math above, not enough to let a real split-payment
+  // shortfall (or overshoot) through as "paid in full".
+  const paymentSum = roundMoney(payments.reduce((acc, p) => acc + p.amount, 0));
+  if (Math.abs(paymentSum - grandTotal) > 0.005) {
     throw new AppError(
       `Payment total (${paymentSum}) does not match order total (${grandTotal})`,
       400,
@@ -244,27 +284,37 @@ export async function createOrder(
       include: { items: true, payments: true },
     });
   } catch (err) {
+    // Whatever failed here — not just an idempotency collision, but any
+    // error (a transient DB error, a constraint violation, etc.) — stock
+    // was already committed above (step 7) as if this order would exist.
+    // Restore it unconditionally before deciding how to handle the error,
+    // so a non-collision failure never leaves stock permanently
+    // understated with no order to show for it.
+    await prisma
+      .$transaction(
+        items.map((item) =>
+          prisma.inventoryItem.updateMany({
+            where: { productId: item.productId, branchId },
+            data: { quantity: { increment: item.quantity } },
+          }),
+        ),
+      )
+      .catch((restoreErr) => {
+        logger.error(
+          `Failed to restore stock after order-create failure for store ${storeId}, branch ${branchId} — inventory may be permanently understated for items: ${items.map((i) => i.productId).join(', ')}`,
+          restoreErr,
+        );
+      });
+
     // Lost the idempotency race: another request with the same clientOrderId
     // committed its order between our findFirst check (step 0) and this
-    // insert — the (storeId, clientOrderId) unique constraint rejects us with
-    // P2002. We already decremented stock above as if our order would win;
-    // since it didn't, restore it, then hand back the winner's order.
+    // insert — the (storeId, clientOrderId) unique constraint rejects us
+    // with P2002. Hand back the winner's order instead of failing outright.
     if (
       clientOrderId &&
       err instanceof Prisma.PrismaClientKnownRequestError &&
       err.code === 'P2002'
     ) {
-      await prisma
-        .$transaction(
-          items.map((item) =>
-            prisma.inventoryItem.updateMany({
-              where: { productId: item.productId, branchId },
-              data: { quantity: { increment: item.quantity } },
-            }),
-          ),
-        )
-        .catch(() => {});
-
       const existing = await prisma.order.findFirst({
         where: { storeId, clientOrderId },
         include: { items: true, payments: true },
@@ -277,6 +327,23 @@ export async function createOrder(
   // ── 10. Stock movements (supplementary audit; best-effort) ───────────────────
   if (movementData.length > 0) {
     await prisma.stockMovement.createMany({ data: movementData }).catch(() => {});
+  }
+
+  if (isLargeDiscount) {
+    void auditLog({
+      storeId,
+      userId: cashierId,
+      action: 'LARGE_DISCOUNT',
+      entity: 'Order',
+      entityId: order.id,
+      metadata: {
+        branchId,
+        orderNumber: order.orderNumber,
+        discountAmount,
+        preDiscountTotal,
+        discountPercent: Math.round((discountAmount / preDiscountTotal) * 100),
+      },
+    });
   }
 
   return { order, duplicate: false };
@@ -386,7 +453,7 @@ export async function refundOrder(
 ) {
   const order = await prisma.order.findUnique({
     where: { id: orderId },
-    include: { items: true },
+    include: { items: true, payments: true },
   });
 
   if (!order) throw new AppError('Order not found', 404);
@@ -401,6 +468,21 @@ export async function refundOrder(
   }
   if (order.status !== OrderStatus.COMPLETED) {
     throw new AppError('Only completed orders can be refunded', 400);
+  }
+
+  // Atomically claim the order before touching stock or payments. The status
+  // checks above are just an early, friendly error — they're a plain read
+  // with no lock, so two concurrent refund requests (a double-click, or a
+  // client retry after a timeout that actually succeeded server-side) can
+  // both pass them. This updateMany is the real guard: only the request that
+  // actually flips COMPLETED → REFUNDED proceeds to restock/refund-pay;
+  // whichever one loses the race stops here instead of doing it twice.
+  const claim = await prisma.order.updateMany({
+    where: { id: orderId, status: OrderStatus.COMPLETED },
+    data: { status: OrderStatus.REFUNDED },
+  });
+  if (claim.count === 0) {
+    throw new AppError('Order is already refunded', 409);
   }
 
   const refundableItems = order.items.filter((i) => i.productId);
@@ -436,22 +518,46 @@ export async function refundOrder(
       }),
     );
 
-  const orderUpdateOp = prisma.order.update({
+  // Reverse each originally-successful payment by its own method and amount
+  // instead of one hardcoded CASH lump sum — otherwise a refunded CARD (or
+  // split cash+card) sale keeps counting as live CARD revenue forever in
+  // payment-method reports, while the refund itself shows up mislabeled as
+  // CASH. Mark the originals REFUNDED too, so they stop being counted as
+  // live SUCCESS revenue at all.
+  const successfulPayments = order.payments.filter((p) => p.status === PaymentStatus.SUCCESS);
+
+  const markOriginalsRefundedOp = prisma.payment.updateMany({
+    where: { orderId, status: PaymentStatus.SUCCESS },
+    data: { status: PaymentStatus.REFUNDED },
+  });
+
+  // Defensive fallback for the shouldn't-happen case of a COMPLETED order
+  // with no SUCCESS payment rows — still record a refund for the full
+  // total rather than silently refunding zero.
+  const refundPaymentOps =
+    successfulPayments.length > 0
+      ? successfulPayments.map((p) =>
+          prisma.payment.create({
+            data: { orderId, method: p.method, amount: p.amount, status: PaymentStatus.REFUNDED },
+          }),
+        )
+      : [
+          prisma.payment.create({
+            data: { orderId, method: 'CASH', amount: order.grandTotal, status: PaymentStatus.REFUNDED },
+          }),
+        ];
+
+  const finalOrderOp = prisma.order.findUniqueOrThrow({
     where: { id: orderId },
-    data: {
-      status: OrderStatus.REFUNDED,
-      payments: {
-        create: {
-          method: 'CASH',
-          amount: order.grandTotal,
-          status: PaymentStatus.REFUNDED,
-        },
-      },
-    },
     include: { items: true, payments: true },
   });
 
-  const results = await prisma.$transaction([...movementOps, orderUpdateOp]);
+  const results = await prisma.$transaction([
+    ...movementOps,
+    markOriginalsRefundedOp,
+    ...refundPaymentOps,
+    finalOrderOp,
+  ]);
   const refunded = results[results.length - 1] as OrderWithDetails;
 
   await auditLog({

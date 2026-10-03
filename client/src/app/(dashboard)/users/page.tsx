@@ -5,6 +5,7 @@ import { useAuthStore } from '@/store/authStore';
 import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, type CreateUserResult } from '@/hooks/api/useUsers';
 import { useBranches } from '@/hooks/api/useBranches';
 import { useUiStore } from '@/store/uiStore';
+import { getErrorMessage } from '@/lib/errors';
 import DataTable, { type Column } from '@/components/ui/DataTable';
 import Badge from '@/components/ui/Badge';
 import Drawer from '@/components/ui/Drawer';
@@ -42,7 +43,7 @@ export default function UsersPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<CreateUserResult | null>(null);
 
-  const { data, isLoading } = useUsers({ page, limit: 20 });
+  const { data, isLoading, isError, error, refetch } = useUsers({ page, limit: 20 });
   const { mutateAsync: createUser, isPending: isCreating } = useCreateUser();
   const { mutateAsync: updateUser, isPending: isUpdating } = useUpdateUser(editUser?.id ?? '');
   const { mutate: deleteUser, isPending: isDeleting } = useDeleteUser(deleteId ?? '');
@@ -81,8 +82,7 @@ export default function UsersPage() {
         setCredentials(result);
       }
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { message?: string } } };
-      toast(e.response?.data?.message ?? 'Failed to save user', 'error');
+      toast(getErrorMessage(err, 'Failed to save user'), 'error');
     }
   };
 
@@ -135,6 +135,9 @@ export default function UsersPage() {
         columns={columns}
         data={data?.items ?? []}
         isLoading={isLoading}
+        isError={isError}
+        error={error}
+        onRetry={refetch}
         keyExtractor={(u) => u.id}
         pagination={data?.meta}
         onPageChange={setPage}
@@ -211,7 +214,7 @@ export default function UsersPage() {
         onConfirm={() =>
           deleteUser(undefined, {
             onSuccess: () => { setDeleteId(null); toast('User deleted', 'success'); },
-            onError: () => toast('Failed to delete user', 'error'),
+            onError: (err: unknown) => toast(getErrorMessage(err, 'Failed to delete user'), 'error'),
           })
         }
       />

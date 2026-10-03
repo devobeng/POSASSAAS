@@ -1,8 +1,18 @@
 import type { Response } from 'express';
 
+// A cell starting with =, +, -, or @ is interpreted as a formula by Excel/
+// Sheets when the CSV is opened — free-text fields that flow into exports
+// (product names, expense descriptions, etc.) are attacker-controlled, so
+// without this a crafted name executes as a formula for whoever opens the
+// report (CSV formula injection).
+const FORMULA_PREFIX = /^[=+\-@]/;
+
 function escapeCell(value: unknown): string {
   if (value === null || value === undefined) return '';
-  const str = String(value);
+  let str = String(value);
+  if (FORMULA_PREFIX.test(str)) {
+    str = `'${str}`;
+  }
   if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
     return `"${str.replace(/"/g, '""')}"`;
   }

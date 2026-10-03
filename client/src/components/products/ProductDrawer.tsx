@@ -9,6 +9,7 @@ import { useCreateProduct, useUpdateProduct } from '@/hooks/api/useProducts';
 import { useCategories, useCreateCategory } from '@/hooks/api/useCategories';
 import { useUiStore } from '@/store/uiStore';
 import api from '@/lib/axios';
+import { getErrorMessage } from '@/lib/errors';
 import { blockInvalidNumberKey } from '@/lib/numericInput';
 import type { ApiResponse, Product } from '@/types';
 import Image from 'next/image';
@@ -90,8 +91,7 @@ export default function ProductDrawer({ open, product, onClose }: Props) {
       setAddingCategory(false);
       setNewCategoryName('');
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { message?: string } } };
-      toast(e.response?.data?.message ?? 'Failed to create category', 'error');
+      toast(getErrorMessage(err, 'Failed to create category'), 'error');
     }
   };
 
@@ -154,16 +154,14 @@ export default function ProductDrawer({ open, product, onClose }: Props) {
           // happens to refetch it.
           qc.invalidateQueries({ queryKey: ['products'] });
         } catch (imgErr: unknown) {
-          const e = imgErr as { response?: { data?: { message?: string } } };
-          toast(e.response?.data?.message ?? 'Product saved but image upload failed', 'warning');
+          toast(getErrorMessage(imgErr, 'Product saved but image upload failed'), 'warning');
         }
       }
 
       toast(isEditing ? 'Product updated' : 'Product created', 'success');
       onClose();
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { message?: string } } };
-      toast(e.response?.data?.message ?? 'Failed to save product', 'error');
+      toast(getErrorMessage(err, 'Failed to save product'), 'error');
     }
   };
 

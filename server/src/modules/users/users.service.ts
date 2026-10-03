@@ -4,6 +4,7 @@ import { hashPassword, comparePassword } from '../../utils/hash';
 import { normalizePhone } from '../../utils/phone';
 import { AppError } from '../../middleware/error';
 import { auditLog } from '../../utils/audit';
+import { assertBranchInStore } from '../inventory/inventory.service';
 import type { JwtPayload } from '../../utils/jwt';
 import type { Role } from '@prisma/client';
 import type { CreateUserInput, UpdateUserInput, GetUsersQuery } from './users.schema';
@@ -120,6 +121,11 @@ export async function createUser(
     }
     if (!actor.branchId) throw new AppError('You are not assigned to a branch', 403);
     data = { ...data, branchId: actor.branchId };
+  } else if (data.branchId) {
+    // STORE_ADMIN/SUPER_ADMIN supply branchId directly from the request —
+    // must belong to this store, or a user could be assigned to another
+    // tenant's branch entirely.
+    await assertBranchInStore(storeId, data.branchId);
   }
 
   await assertUserLimit(storeId);
@@ -181,6 +187,10 @@ export async function updateUser(
 
   if (actor.role === 'BRANCH_MANAGER' && target.branchId !== actor.branchId) {
     throw new AppError('You can only manage users in your branch', 403);
+  }
+
+  if (data.branchId) {
+    await assertBranchInStore(storeId, data.branchId);
   }
 
   const user = await prisma.user.update({

@@ -5,19 +5,101 @@ import type { BaseDateRangeQuery, SalesSummaryQuery, SalesByProductQuery, Expens
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function defaultDates(startDate?: string, endDate?: string) {
+const BARE_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** The store's report timezone, cached briefly since it's looked up on every
+ *  report call and changes essentially never. SUPER_ADMIN cross-store
+ *  (platform-wide) views have no single store to derive one from — UTC,
+ *  same as this codebase's prior behavior everywhere, is the only sane
+ *  default there. */
+async function getStoreTimezone(storeId?: string): Promise<string> {
+  if (!storeId) return 'UTC';
+  const cacheKey = `store-tz:${storeId}`;
+  const cached = await cacheGet(cacheKey);
+  if (typeof cached === 'string') return cached;
+
+  const store = await prisma.store.findUnique({ where: { id: storeId }, select: { timezone: true } });
+  const tz = store?.timezone ?? 'UTC';
+  await cacheSet(cacheKey, tz, 5 * 60_000);
+  return tz;
+}
+
+/** The UTC instant corresponding to local midnight of `dateStr` (YYYY-MM-DD)
+ *  in `timeZone`. Used so a bare date from a report's date-range picker means
+ *  that calendar day in the STORE's timezone, not a UTC calendar day — a
+ *  store several hours off UTC would otherwise have sales near local
+ *  midnight silently attributed to the wrong day's report. */
+export function localMidnightUTC(dateStr: string, timeZone: string): Date {
+  const naiveUTC = new Date(`${dateStr}T00:00:00.000Z`);
+  if (timeZone === 'UTC') return naiveUTC;
+
+  // Render that UTC instant as wall-clock time in timeZone, then measure how
+  // far that rendering drifted from the UTC instant we started from — that
+  // drift is exactly the offset needed to correct our UTC-midnight guess
+  // into the real local-midnight instant (also correct across a DST change
+  // on this date, since the offset is measured at this date, not today's).
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(naiveUTC);
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+  const asIfLocal = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+  const offsetMs = asIfLocal - naiveUTC.getTime();
+  return new Date(naiveUTC.getTime() - offsetMs);
+}
+
+export function dateStrInTz(reference: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(reference);
+}
+
+/** Local midnight of "today" (in timeZone) as of `reference`. */
+export function startOfTodayInTz(timeZone: string, reference = new Date()): Date {
+  return localMidnightUTC(dateStrInTz(reference, timeZone), timeZone);
+}
+
+/** Local midnight of the 1st of the current month (in timeZone) as of `reference`. */
+export function startOfMonthInTz(timeZone: string, reference = new Date()): Date {
+  const monthStr = `${dateStrInTz(reference, timeZone).slice(0, 7)}-01`;
+  return localMidnightUTC(monthStr, timeZone);
+}
+
+/** expenseDate is stored as a plain SQL DATE (no time-of-day, no timezone at
+ *  all) — so unlike `defaultDates` above, a bare date string here is used
+ *  exactly as given, never shifted by timezone. Only the DEFAULT range (no
+ *  explicit dates supplied) derives "today" from the store's timezone, so
+ *  the default window still lines up with the store's actual calendar day. */
+function expenseDateRangeStrs(
+  startDate: string | undefined,
+  endDate: string | undefined,
+  timezone: string,
+): { startStr: string; endStr: string } {
+  const endStr = endDate
+    ? endDate.slice(0, 10)
+    : dateStrInTz(new Date(), timezone);
+  const startStr = startDate
+    ? startDate.slice(0, 10)
+    : dateStrInTz(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), timezone);
+  return { startStr, endStr };
+}
+
+export function defaultDates(startDate?: string, endDate?: string, timezone = 'UTC') {
   let end: Date;
   if (endDate) {
-    end = new Date(endDate);
-    // Bare YYYY-MM-DD parses as midnight UTC — advance to end of day so the full day is included
-    if (/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
-      end = new Date(end.getTime() + 86_400_000 - 1);
-    }
+    // Bare YYYY-MM-DD means that whole calendar day in the store's
+    // timezone — advance to just before the following local midnight so
+    // the full local day is included.
+    end = BARE_DATE.test(endDate)
+      ? new Date(localMidnightUTC(endDate, timezone).getTime() + 86_400_000 - 1)
+      : new Date(endDate);
   } else {
     end = new Date();
   }
   const start = startDate
-    ? new Date(startDate)
+    ? (BARE_DATE.test(startDate) ? localMidnightUTC(startDate, timezone) : new Date(startDate))
     : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   return { start, end };
 }
@@ -71,7 +153,8 @@ export async function getSalesSummary(
   branchId: string | undefined,
   query: SalesSummaryQuery,
 ) {
-  const { start, end } = defaultDates(query.startDate, query.endDate);
+  const tz = await getStoreTimezone(storeId);
+  const { start, end } = defaultDates(query.startDate, query.endDate, tz);
   const scopedBranchId = role === 'BRANCH_MANAGER' ? branchId : query.branchId;
   const { storeFilter, branchFilter, cashierFilter } = buildScopeFilters(
     role, userId, storeId, scopedBranchId,
@@ -84,7 +167,7 @@ export async function getSalesSummary(
 
   const rows = await prisma.$queryRaw<SalesSummaryRow[]>`
     SELECT
-      DATE_TRUNC(${truncUnit}, o."createdAt") AS period,
+      DATE_TRUNC(${truncUnit}, o."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${tz}) AS period,
       COUNT(o.id)                             AS order_count,
       SUM(o."grandTotal")                     AS revenue,
       SUM(o."taxTotal")                       AS tax_total,
@@ -127,7 +210,8 @@ export async function getSalesByProduct(
   branchId: string | undefined,
   query: SalesByProductQuery,
 ) {
-  const { start, end } = defaultDates(query.startDate, query.endDate);
+  const tz = await getStoreTimezone(storeId);
+  const { start, end } = defaultDates(query.startDate, query.endDate, tz);
   const scopedBranchId = role === 'BRANCH_MANAGER' ? branchId : query.branchId;
   const { storeFilter, branchFilter, cashierFilter } = buildScopeFilters(
     role, userId, storeId, scopedBranchId,
@@ -176,7 +260,8 @@ export async function getSalesByCategory(
   branchId: string | undefined,
   query: BaseDateRangeQuery,
 ) {
-  const { start, end } = defaultDates(query.startDate, query.endDate);
+  const tz = await getStoreTimezone(storeId);
+  const { start, end } = defaultDates(query.startDate, query.endDate, tz);
   const scopedBranchId = role === 'BRANCH_MANAGER' ? branchId : query.branchId;
   const { storeFilter, branchFilter, cashierFilter } = buildScopeFilters(
     role, userId, storeId, scopedBranchId,
@@ -227,7 +312,8 @@ export async function getSalesByCashier(
   branchId: string | undefined,
   query: BaseDateRangeQuery,
 ) {
-  const { start, end } = defaultDates(query.startDate, query.endDate);
+  const tz = await getStoreTimezone(storeId);
+  const { start, end } = defaultDates(query.startDate, query.endDate, tz);
   const scopedBranchId = role === 'BRANCH_MANAGER' ? branchId : query.branchId;
   const { storeFilter, branchFilter } = buildScopeFilters(
     role, userId, storeId, scopedBranchId,
@@ -276,7 +362,8 @@ export async function getSalesByBranch(
   storeId: string | undefined,
   query: BaseDateRangeQuery,
 ) {
-  const { start, end } = defaultDates(query.startDate, query.endDate);
+  const tz = await getStoreTimezone(storeId);
+  const { start, end } = defaultDates(query.startDate, query.endDate, tz);
   const storeFilter = storeId ? Prisma.sql`AND o."storeId" = ${storeId}` : Prisma.empty;
 
   const rows = await prisma.$queryRaw<SalesByBranchRow[]>`
@@ -318,7 +405,8 @@ export async function getPaymentMethodsBreakdown(
   branchId: string | undefined,
   query: BaseDateRangeQuery,
 ) {
-  const { start, end } = defaultDates(query.startDate, query.endDate);
+  const tz = await getStoreTimezone(storeId);
+  const { start, end } = defaultDates(query.startDate, query.endDate, tz);
   const scopedBranchId = role === 'BRANCH_MANAGER' ? branchId : query.branchId;
   const { storeFilter, branchFilter } = buildScopeFilters(
     role, userId, storeId, scopedBranchId,
@@ -429,7 +517,8 @@ export async function getProfit(
   branchId: string | undefined,
   query: BaseDateRangeQuery,
 ) {
-  const { start, end } = defaultDates(query.startDate, query.endDate);
+  const tz = await getStoreTimezone(storeId);
+  const { start, end } = defaultDates(query.startDate, query.endDate, tz);
   const scopedBranchId = role === 'BRANCH_MANAGER' ? branchId : query.branchId;
   const { storeFilter, branchFilter } = buildScopeFilters(
     role, userId, storeId, scopedBranchId,
@@ -437,15 +526,20 @@ export async function getProfit(
   const cashierFilter =
     role === 'CASHIER' ? Prisma.sql`AND o."cashierId" = ${userId}` : Prisma.empty;
 
+  // COGS uses order_items.costPrice — the cost snapshotted at time of sale —
+  // never products.costPrice (today's cost). Otherwise editing a product's
+  // cost retroactively rewrites the margin on every past order that sold
+  // it, and a since-deleted product would contribute zero COGS via the old
+  // LEFT JOIN. Pre-migration rows have no snapshot (column added later) and
+  // are unavoidably excluded from COGS — there's no historical cost to use.
   const rows = await prisma.$queryRaw<ProfitRow[]>`
     SELECT
-      SUM(oi."lineTotal")                               AS revenue,
-      SUM(oi.quantity * p."costPrice")                  AS cogs,
-      SUM(oi."lineTotal") - SUM(oi.quantity * p."costPrice") AS gross_profit,
-      COUNT(DISTINCT o.id)                              AS order_count
+      SUM(oi."lineTotal")                                  AS revenue,
+      SUM(oi.quantity * oi."costPrice")                     AS cogs,
+      SUM(oi."lineTotal") - SUM(oi.quantity * oi."costPrice") AS gross_profit,
+      COUNT(DISTINCT o.id)                                  AS order_count
     FROM order_items oi
     JOIN orders   o ON o.id  = oi."orderId"
-    LEFT JOIN products p ON p.id = oi."productId"
     WHERE o.status = 'COMPLETED'
       AND o."createdAt" >= ${start}
       AND o."createdAt" <= ${end}
@@ -491,10 +585,22 @@ export async function getDashboard(
   const cached = await cacheGet(cacheKey);
   if (cached !== undefined) return cached;
 
-  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+  const tz = await getStoreTimezone(storeId);
+  // "Today" must mean the store's local calendar day, not the server
+  // process's own timezone (setHours() previously used whatever TZ the
+  // Node process happens to run in) — otherwise a sale near local midnight
+  // lands in the wrong day's "today" KPI.
+  const todayStart = startOfTodayInTz(tz);
   const todayEnd   = new Date();
 
-  const scopedBranchId = role === 'BRANCH_MANAGER' ? branchId : undefined;
+  // CASHIER is included here (not just BRANCH_MANAGER) — otherwise the
+  // low-stock count below is computed store-wide for a role that's
+  // inherently tied to one branch, leaking other branches' stock levels.
+  // The orders-based queries below don't strictly need this (cashierFilter
+  // already narrows them to the caller's own orders regardless), but
+  // deriving scope from the JWT consistently for restricted roles is safer
+  // than relying on a second, unrelated filter to happen to cover the gap.
+  const scopedBranchId = role === 'BRANCH_MANAGER' || role === 'CASHIER' ? branchId : undefined;
   const { storeFilter, branchFilter } = buildScopeFilters(role, userId, storeId, scopedBranchId);
   const cashierFilter = role === 'CASHIER' ? Prisma.sql`AND o."cashierId" = ${userId}` : Prisma.empty;
 
@@ -573,7 +679,7 @@ export async function getExpensesSummary(
   role: string,
   query: ExpensesSummaryQuery,
 ) {
-  const { start, end } = defaultDates(query.startDate, query.endDate);
+  const tz = await getStoreTimezone(storeId);
   const effectiveBranchId = role === 'BRANCH_MANAGER' ? branchId : query.branchId;
 
   const storeFilter  = storeId          ? Prisma.sql`AND e."storeId"  = ${storeId}`          : Prisma.empty;
@@ -585,8 +691,7 @@ export async function getExpensesSummary(
     : query.groupBy === 'week' ? Prisma.sql`'week'`
     : Prisma.sql`'day'`;
 
-  const startStr = start.toISOString().split('T')[0];
-  const endStr   = end.toISOString().split('T')[0];
+  const { startStr, endStr } = expenseDateRangeStrs(query.startDate, query.endDate, tz);
 
   const [byCategory, byPeriod] = await Promise.all([
     prisma.$queryRaw<ExpensesByCategoryRow[]>`
@@ -663,7 +768,8 @@ export async function getProfitAndLoss(
   branchId: string | undefined,
   query: BaseDateRangeQuery,
 ) {
-  const { start, end } = defaultDates(query.startDate, query.endDate);
+  const tz = await getStoreTimezone(storeId);
+  const { start, end } = defaultDates(query.startDate, query.endDate, tz);
   const effectiveBranchId = role === 'BRANCH_MANAGER' ? branchId : query.branchId;
   const { storeFilter, branchFilter } = buildScopeFilters(role, userId, storeId, effectiveBranchId);
   const cashierFilter = role === 'CASHIER' ? Prisma.sql`AND o."cashierId" = ${userId}` : Prisma.empty;
@@ -671,18 +777,16 @@ export async function getProfitAndLoss(
   const expStoreFilter  = storeId          ? Prisma.sql`AND e."storeId"  = ${storeId}`          : Prisma.empty;
   const expBranchFilter = effectiveBranchId ? Prisma.sql`AND e."branchId" = ${effectiveBranchId}` : Prisma.empty;
 
-  const startStr = start.toISOString().split('T')[0];
-  const endStr   = end.toISOString().split('T')[0];
+  const { startStr, endStr } = expenseDateRangeStrs(query.startDate, query.endDate, tz);
 
   const [revenueRows, expenseRows] = await Promise.all([
     prisma.$queryRaw<PnLRevenueRow[]>`
       SELECT
         COALESCE(SUM(oi."lineTotal"), 0)                       AS revenue,
-        COALESCE(SUM(oi.quantity * p."costPrice"), 0)          AS cogs,
+        COALESCE(SUM(oi.quantity * oi."costPrice"), 0)         AS cogs,
         COUNT(DISTINCT o.id)                                   AS order_count
       FROM order_items oi
       JOIN orders   o ON o.id  = oi."orderId"
-      LEFT JOIN products p ON p.id = oi."productId"
       WHERE o.status = 'COMPLETED'
         AND o."createdAt" >= ${start}
         AND o."createdAt" <= ${end}
@@ -745,11 +849,16 @@ export async function getDashboardExtended(
   const cached = await cacheGet(cacheKey);
   if (cached !== undefined) return cached;
 
-  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+  const tz = await getStoreTimezone(storeId);
+  // Local calendar boundaries in the store's timezone — see getDashboard above.
+  const todayStart = startOfTodayInTz(tz);
   const todayEnd   = new Date();
-  const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+  const monthStart = startOfMonthInTz(tz);
 
-  const scopedBranchId = role === 'BRANCH_MANAGER' ? branchId : undefined;
+  // See getDashboard above — CASHIER must be branch-scoped here too, or the
+  // low-stock count leaks other branches' stock levels to a role that's
+  // inherently tied to one branch.
+  const scopedBranchId = role === 'BRANCH_MANAGER' || role === 'CASHIER' ? branchId : undefined;
   const { storeFilter, branchFilter } = buildScopeFilters(role, userId, storeId, scopedBranchId);
   const cashierFilter = role === 'CASHIER' ? Prisma.sql`AND o."cashierId" = ${userId}` : Prisma.empty;
 
@@ -758,8 +867,11 @@ export async function getDashboardExtended(
   const expStoreFilter  = storeId        ? Prisma.sql`AND e."storeId"  = ${storeId}`        : Prisma.empty;
   const expBranchFilter = scopedBranchId ? Prisma.sql`AND e."branchId" = ${scopedBranchId}` : Prisma.empty;
 
-  const monthStartStr = monthStart.toISOString().split('T')[0];
-  const todayEndStr   = todayEnd.toISOString().split('T')[0];
+  // Rendered back through the SAME timezone that produced these instants,
+  // not toISOString() (which renders in UTC and would shift the calendar
+  // date for any store not on UTC).
+  const monthStartStr = dateStrInTz(monthStart, tz);
+  const todayEndStr   = dateStrInTz(todayEnd, tz);
 
   const [todayRows, topProductRows, lowStockRows, monthSummaryRows] = await Promise.all([
     prisma.$queryRaw<DashboardTodayRow[]>`
@@ -784,12 +896,11 @@ export async function getDashboardExtended(
     `,
     prisma.$queryRaw<MonthSummaryRow[]>`
       SELECT
-        COALESCE(SUM(oi."lineTotal"), 0)             AS revenue,
-        COALESCE(SUM(oi.quantity * p."costPrice"), 0) AS cogs,
-        0::numeric                                   AS expenses
+        COALESCE(SUM(oi."lineTotal"), 0)              AS revenue,
+        COALESCE(SUM(oi.quantity * oi."costPrice"), 0) AS cogs,
+        0::numeric                                    AS expenses
       FROM order_items oi
       JOIN orders o ON o.id = oi."orderId"
-      LEFT JOIN products p ON p.id = oi."productId"
       WHERE o.status = 'COMPLETED'
         AND o."createdAt" >= ${monthStart} AND o."createdAt" <= ${todayEnd}
         ${storeFilter} ${branchFilter} ${cashierFilter}

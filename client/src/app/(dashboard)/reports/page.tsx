@@ -12,6 +12,7 @@ import {
 import { useProfitAndLoss, type PnLData } from '@/hooks/api/useExpenses';
 import { useBranches } from '@/hooks/api/useBranches';
 import ClientOnly from '@/components/ui/ClientOnly';
+import SharedErrorState from '@/components/ui/ErrorState';
 import api from '@/lib/axios';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -168,33 +169,35 @@ export default function ReportsPage() {
         ) : (
         <>
         {report === 'sales-summary' && (
-          <SalesSummaryReport data={salesSummary.data} isLoading={salesSummary.isLoading} />
+          <SalesSummaryReport data={salesSummary.data} isLoading={salesSummary.isLoading} isError={salesSummary.isError} error={salesSummary.error} />
         )}
         {report === 'by-product' && (
-          <ByProductReport data={byProduct.data} isLoading={byProduct.isLoading} />
+          <ByProductReport data={byProduct.data} isLoading={byProduct.isLoading} isError={byProduct.isError} error={byProduct.error} />
         )}
         {report === 'by-category' && (
-          <SimpleBarsReport data={byCategory.data} isLoading={byCategory.isLoading} nameKey="categoryName" />
+          <SimpleBarsReport data={byCategory.data} isLoading={byCategory.isLoading} isError={byCategory.isError} error={byCategory.error} nameKey="categoryName" />
         )}
         {report === 'by-cashier' && (
-          <SimpleBarsReport data={byCashier.data} isLoading={byCashier.isLoading} nameKey="cashierName" />
+          <SimpleBarsReport data={byCashier.data} isLoading={byCashier.isLoading} isError={byCashier.isError} error={byCashier.error} nameKey="cashierName" />
         )}
         {report === 'by-branch' && (
-          <SimpleBarsReport data={byBranch.data} isLoading={byBranch.isLoading} nameKey="branchName" />
+          <SimpleBarsReport data={byBranch.data} isLoading={byBranch.isLoading} isError={byBranch.isError} error={byBranch.error} nameKey="branchName" />
         )}
         {report === 'payment-methods' && (
-          <PaymentMethodsReport data={paymentMethods.data} isLoading={paymentMethods.isLoading} />
+          <PaymentMethodsReport data={paymentMethods.data} isLoading={paymentMethods.isLoading} isError={paymentMethods.isError} error={paymentMethods.error} />
         )}
         {report === 'inventory' && (
-          <InventoryReport data={inventoryValuation.data} isLoading={inventoryValuation.isLoading} />
+          <InventoryReport data={inventoryValuation.data} isLoading={inventoryValuation.isLoading} isError={inventoryValuation.isError} error={inventoryValuation.error} />
         )}
         {report === 'profit' && (
-          <ProfitReport data={profitReport.data} isLoading={profitReport.isLoading} />
+          <ProfitReport data={profitReport.data} isLoading={profitReport.isLoading} isError={profitReport.isError} error={profitReport.error} />
         )}
         {report === 'pnl' && (
           <ProfitAndLossReport
             data={pnlReport.data}
             isLoading={pnlReport.isLoading}
+            isError={pnlReport.isError}
+            error={pnlReport.error}
             startDate={startDate}
             endDate={endDate}
           />
@@ -216,9 +219,20 @@ function LoadingState() {
   );
 }
 
+// Distinct from "no data" — a genuinely empty period and a failed request
+// look identical to a "No data" message alone. A store owner checking sales
+// during an actual outage could otherwise mistake a broken report for zero
+// sales instead of realizing the report itself is broken.
+// Thin wrapper around the shared ErrorState so every report keeps its
+// existing "Couldn't load this report" wording without duplicating markup.
+function ErrorState({ error }: { error: unknown }) {
+  return <SharedErrorState error={error} message="Couldn't load this report" />;
+}
+
 type SalesSummaryRow = { period: string; revenue: number; orderCount: number; taxTotal: number; discountTotal: number; avgOrderValue: number };
-function SalesSummaryReport({ data, isLoading }: { data: unknown; isLoading: boolean }) {
+function SalesSummaryReport({ data, isLoading, isError, error }: { data: unknown; isLoading: boolean; isError: boolean; error: unknown }) {
   if (isLoading) return <LoadingState />;
+  if (isError) return <ErrorState error={error} />;
   const rows = (data as { data: SalesSummaryRow[] } | undefined)?.data ?? [];
   if (!rows.length) return <p className="text-gray-400 text-sm">No data for this period</p>;
   const totRevenue  = rows.reduce((s, r) => s + r.revenue, 0);
@@ -258,8 +272,9 @@ function SalesSummaryReport({ data, isLoading }: { data: unknown; isLoading: boo
 }
 
 type ByProductRow = { productId: string | null; productName: string; totalQuantity: number; totalRevenue: number };
-function ByProductReport({ data, isLoading }: { data: unknown; isLoading: boolean }) {
+function ByProductReport({ data, isLoading, isError, error }: { data: unknown; isLoading: boolean; isError: boolean; error: unknown }) {
   if (isLoading) return <LoadingState />;
+  if (isError) return <ErrorState error={error} />;
   const rows = (data as { data: ByProductRow[] } | undefined)?.data ?? [];
   if (!rows.length) return <p className="text-gray-400 text-sm">No data for this period</p>;
   return (
@@ -293,8 +308,9 @@ function ByProductReport({ data, isLoading }: { data: unknown; isLoading: boolea
   );
 }
 
-function SimpleBarsReport({ data, isLoading, nameKey }: { data: unknown; isLoading: boolean; nameKey: string }) {
+function SimpleBarsReport({ data, isLoading, isError, error, nameKey }: { data: unknown; isLoading: boolean; isError: boolean; error: unknown; nameKey: string }) {
   if (isLoading) return <LoadingState />;
+  if (isError) return <ErrorState error={error} />;
   // Use `any` to avoid TSX parser ambiguity with typed object-cast + array type suffix
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rows: any[] | undefined = (data as any)?.data;
@@ -335,8 +351,9 @@ function SimpleBarsReport({ data, isLoading, nameKey }: { data: unknown; isLoadi
   );
 }
 
-function PaymentMethodsReport({ data, isLoading }: { data: unknown; isLoading: boolean }) {
+function PaymentMethodsReport({ data, isLoading, isError, error }: { data: unknown; isLoading: boolean; isError: boolean; error: unknown }) {
   if (isLoading) return <LoadingState />;
+  if (isError) return <ErrorState error={error} />;
   const rows = (data as { data: { method: string; totalAmount: number; transactionCount: number }[] } | undefined)?.data;
   if (!rows?.length) return <p className="text-gray-400 text-sm">No data</p>;
   return (
@@ -370,8 +387,9 @@ function PaymentMethodsReport({ data, isLoading }: { data: unknown; isLoading: b
 }
 
 type InvRow = { productName: string; totalQuantity: number; costValue: number; sellingValue: number };
-function InventoryReport({ data, isLoading }: { data: unknown; isLoading: boolean }) {
+function InventoryReport({ data, isLoading, isError, error }: { data: unknown; isLoading: boolean; isError: boolean; error: unknown }) {
   if (isLoading) return <LoadingState />;
+  if (isError) return <ErrorState error={error} />;
   const d = (data as { data: { items: InvRow[]; totals: { totalCostValue: number; totalSellingValue: number } } } | undefined)?.data;
   const rows = d?.items ?? [];
   if (!rows.length) return <p className="text-gray-400 text-sm">No data</p>;
@@ -404,8 +422,9 @@ function InventoryReport({ data, isLoading }: { data: unknown; isLoading: boolea
   );
 }
 
-function ProfitReport({ data, isLoading }: { data: unknown; isLoading: boolean }) {
+function ProfitReport({ data, isLoading, isError, error }: { data: unknown; isLoading: boolean; isError: boolean; error: unknown }) {
   if (isLoading) return <LoadingState />;
+  if (isError) return <ErrorState error={error} />;
   const d = (data as { data: { revenue: number; cogs: number; grossProfit: number; margin: number } } | undefined)?.data;
   if (!d) return <p className="text-gray-400 text-sm">No data</p>;
   return (
@@ -448,9 +467,10 @@ function PnlRow({
 }
 
 function ProfitAndLossReport({
-  data, isLoading, startDate, endDate,
-}: { data: PnLData | undefined; isLoading: boolean; startDate: string; endDate: string }) {
+  data, isLoading, isError, error, startDate, endDate,
+}: { data: PnLData | undefined; isLoading: boolean; isError: boolean; error: unknown; startDate: string; endDate: string }) {
   if (isLoading) return <LoadingState />;
+  if (isError) return <ErrorState error={error} />;
   if (!data) return <p className="text-gray-400 text-sm">No data for this period</p>;
 
   const {

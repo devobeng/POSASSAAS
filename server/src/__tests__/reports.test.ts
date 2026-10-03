@@ -1,6 +1,14 @@
 import request from 'supertest';
 import { app } from '../app';
 import { signAccessToken } from '../utils/jwt';
+import { localMidnightUTC, defaultDates, startOfTodayInTz } from '../modules/reports/reports.service';
+import { __clearInMemoryCacheForTests } from '../utils/cache';
+
+// getStoreTimezone (reports.service.ts) caches its store lookup in-process
+// for 5 minutes — without this, a store-abc timezone cached by an earlier
+// test would silently skip prisma.store.findUnique in a later test that
+// expects that call to happen.
+beforeEach(() => __clearInMemoryCacheForTests());
 
 // ─── Prisma mock ──────────────────────────────────────────────────────────────
 
@@ -312,6 +320,16 @@ describe('GET /api/v1/reports/inventory-valuation', () => {
     expect(res.status).toBe(403);
   });
 
+  it('BRANCH_MANAGER can access → 200 (route allows managerPlus; a stray admin-only check previously blocked them anyway)', async () => {
+    prisma.$queryRaw.mockResolvedValue(mockInvRows);
+
+    const res = await request(app)
+      .get('/api/v1/reports/inventory-valuation')
+      .set('Authorization', `Bearer ${managerToken()}`);
+
+    expect(res.status).toBe(200);
+  });
+
   it('returns CSV of items when format=csv', async () => {
     prisma.$queryRaw.mockResolvedValue(mockInvRows);
 
@@ -355,6 +373,15 @@ describe('GET /api/v1/reports/profit', () => {
       .set('Authorization', `Bearer ${managerToken()}`);
 
     expect(res.status).toBe(200);
+  });
+
+  it('CASHIER cannot access profit (COGS/margin is not till-level data) → 403', async () => {
+    const res = await request(app)
+      .get('/api/v1/reports/profit')
+      .set('Authorization', `Bearer ${cashierToken()}`);
+
+    expect(res.status).toBe(403);
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 });
 
@@ -483,7 +510,7 @@ describe('Report feature gating', () => {
   });
 
   it('dashboard is never feature-gated regardless of plan', async () => {
-    prisma.store.findUnique.mockResolvedValue({ subscriptionPlan: { features: {} } });
+    prisma.store.findUnique.mockResolvedValue({ subscriptionPlan: { features: {} }, timezone: 'UTC' });
     prisma.$queryRaw
       .mockResolvedValueOnce([{ revenue: '0', order_count: 0n }])
       .mockResolvedValueOnce([])
@@ -496,8 +523,12 @@ describe('Report feature gating', () => {
       .set('Authorization', `Bearer ${adminToken()}`);
 
     expect(res.status).toBe(200);
-    // Dashboard route has no requireFeature — prisma.store.findUnique is never called for it
-    expect(prisma.store.findUnique).not.toHaveBeenCalled();
+    // Dashboard route has no requireFeature — the only store.findUnique call
+    // that happens is the internal timezone lookup for "today"/"this month"
+    // bucketing, which selects `timezone`, never `subscriptionPlan`.
+    for (const [args] of prisma.store.findUnique.mock.calls) {
+      expect((args as { select?: Record<string, unknown> }).select).not.toHaveProperty('subscriptionPlan');
+    }
   });
 
   it('SUPER_ADMIN bypasses feature gating entirely', async () => {
@@ -514,6 +545,59 @@ describe('Report feature gating', () => {
       .set('Authorization', `Bearer ${superToken}`);
 
     expect(res.status).toBe(200);
-    expect(prisma.store.findUnique).not.toHaveBeenCalled();
+    // Same as above — any store.findUnique call here is the timezone
+    // lookup, never a feature/plan check (requireFeature skips SUPER_ADMIN
+    // before it would ever query one).
+    for (const [args] of prisma.store.findUnique.mock.calls) {
+      expect((args as { select?: Record<string, unknown> }).select).not.toHaveProperty('subscriptionPlan');
+    }
+  });
+});
+
+// ─── Timezone-aware date bucketing ─────────────────────────────────────────────
+
+describe('report date-range timezone handling', () => {
+  it('localMidnightUTC returns the UTC instant of local midnight for a positive-offset timezone', () => {
+    // Asia/Manila is UTC+8 year-round (no DST) — local midnight on the 17th
+    // is 16:00 UTC on the 16th.
+    const result = localMidnightUTC('2026-09-17', 'Asia/Manila');
+    expect(result.toISOString()).toBe('2026-09-16T16:00:00.000Z');
+  });
+
+  it('localMidnightUTC returns the UTC instant of local midnight for a negative-offset timezone', () => {
+    // America/New_York is UTC-4 in September (EDT) — local midnight on the
+    // 17th is 04:00 UTC on the 17th.
+    const result = localMidnightUTC('2026-09-17', 'America/New_York');
+    expect(result.toISOString()).toBe('2026-09-17T04:00:00.000Z');
+  });
+
+  it('localMidnightUTC is a no-op for UTC', () => {
+    expect(localMidnightUTC('2026-09-17', 'UTC').toISOString()).toBe('2026-09-17T00:00:00.000Z');
+  });
+
+  it('defaultDates keeps a sale near local midnight in the correct calendar day', () => {
+    // A store in Asia/Manila (UTC+8) asks for "today" = 2026-09-17. A sale
+    // at 2026-09-17T07:00 Manila time is 2026-09-16T23:00Z — the OLD
+    // (UTC-day) boundary logic would have excluded it from "the 17th"
+    // entirely; the range must start before that instant.
+    const { start, end } = defaultDates('2026-09-17', '2026-09-17', 'Asia/Manila');
+    const saleDuringLocalMorning = new Date('2026-09-16T23:00:00.000Z'); // 07:00 local on the 17th
+    expect(saleDuringLocalMorning.getTime()).toBeGreaterThanOrEqual(start.getTime());
+    expect(saleDuringLocalMorning.getTime()).toBeLessThanOrEqual(end.getTime());
+
+    // And a sale that's genuinely still "the 16th" locally must be excluded.
+    const saleStillOnThe16th = new Date('2026-09-16T15:00:00.000Z'); // 23:00 local on the 16th
+    expect(saleStillOnThe16th.getTime()).toBeLessThan(start.getTime());
+  });
+
+  it('startOfTodayInTz renders "today" using the given timezone, not the server process timezone', () => {
+    // 2026-09-17T02:00:00Z is already the 17th in UTC but still the 16th in
+    // America/Los_Angeles (UTC-7 in September, PDT).
+    const reference = new Date('2026-09-17T02:00:00.000Z');
+    const utcToday = startOfTodayInTz('UTC', reference);
+    const laToday = startOfTodayInTz('America/Los_Angeles', reference);
+
+    expect(utcToday.toISOString()).toBe('2026-09-17T00:00:00.000Z');
+    expect(laToday.toISOString()).toBe('2026-09-16T07:00:00.000Z'); // midnight PDT on the 16th
   });
 });

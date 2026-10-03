@@ -5,6 +5,8 @@ import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import pinoHttp from 'pino-http';
 import rateLimit from 'express-rate-limit';
+import { sharedStore } from './middleware/rateLimiter';
+import { redisClient } from './config/redis';
 import { env } from './config/env';
 import { baseLogger } from './utils/logger';
 import { prisma } from './config/database';
@@ -22,7 +24,7 @@ import { paymentsRouter } from './modules/payments/payments.routes';
 import { reportsRouter } from './modules/reports/reports.routes';
 import { syncRouter } from './modules/sync/sync.routes';
 import { expensesRouter } from './modules/expenses/expenses.routes';
-import { errorHandler, notFound } from './middleware/error';
+import { AppError, errorHandler, notFound } from './middleware/error';
 
 const app = express();
 
@@ -43,9 +45,21 @@ app.use(helmet());
 app.use(compression());
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
+// `origin` is validated per-request rather than a static string — the `cors`
+// package echoes a static string back as Access-Control-Allow-Origin
+// regardless of the actual request's Origin, so it silently breaks the moment
+// the browser's origin differs (e.g. Next.js falling back to :3001 because
+// :3000 was already taken). In development any localhost port is accepted to
+// match that behavior; production stays locked to CLIENT_URL exactly.
 app.use(
   cors({
-    origin: env.CLIENT_URL,
+    origin: (origin, callback) => {
+      if (!origin || origin === env.CLIENT_URL) return callback(null, true);
+      if (env.NODE_ENV !== 'production' && /^http:\/\/localhost:\d+$/.test(origin)) {
+        return callback(null, true);
+      }
+      callback(new AppError('Not allowed by CORS', 403));
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   }),
@@ -70,6 +84,19 @@ app.use(
       if (res.statusCode >= 400) return 'warn';
       return 'info';
     },
+    // pino-http's default req/res serializers log full header objects —
+    // without this, every request log line includes the raw Authorization
+    // bearer token and any Set-Cookie (refresh token), and anyone with log
+    // read access (aggregator, dashboard, a future log-shipping bug) could
+    // lift a live session, including SUPER_ADMIN, straight from the logs.
+    redact: {
+      paths: [
+        'req.headers.authorization',
+        'req.headers.cookie',
+        'res.headers["set-cookie"]',
+      ],
+      remove: true,
+    },
   }),
 );
 
@@ -88,6 +115,8 @@ const globalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many requests — please slow down' },
+  store: sharedStore('rl:global:'),
+  passOnStoreError: true, // Redis outage must not 500 all of /api — see rateLimiter.ts
 });
 app.use('/api', globalLimiter);
 
@@ -99,13 +128,31 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // ── Health check ──────────────────────────────────────────────────────────────
-app.get('/healthz', async (_req, res) => {
+// Redis is optional (caching/rate-limiting both fall back to in-process
+// alternatives without it), so an unreachable Redis is reported but doesn't
+// fail the overall check the way an unreachable DB does — the DB is a hard
+// dependency the app can't serve any request without.
+async function checkRedis(): Promise<'ok' | 'unreachable' | 'not configured'> {
+  if (!redisClient) return 'not configured';
   try {
-    await prisma.$queryRaw`SELECT 1`;
-    res.json({ status: 'ok', db: 'ok', timestamp: new Date().toISOString() });
+    await redisClient.ping();
+    return 'ok';
   } catch {
-    res.status(503).json({ status: 'error', db: 'unreachable', timestamp: new Date().toISOString() });
+    return 'unreachable';
   }
+}
+
+app.get('/healthz', async (_req, res) => {
+  const [dbOk, redis] = await Promise.all([
+    prisma.$queryRaw`SELECT 1`.then(() => true).catch(() => false),
+    checkRedis(),
+  ]);
+  res.status(dbOk ? 200 : 503).json({
+    status: dbOk ? 'ok' : 'error',
+    db: dbOk ? 'ok' : 'unreachable',
+    redis,
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // ── Prevent browser caching of all API responses ─────────────────────────────

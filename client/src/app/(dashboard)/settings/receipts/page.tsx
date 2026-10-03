@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useReceiptSettings, useUpdateReceiptSettings } from '@/hooks/api/useReceiptSettings';
 import { useUiStore } from '@/store/uiStore';
+import { getErrorMessage } from '@/lib/errors';
 
 export default function ReceiptSettingsPage() {
   const { data, isLoading } = useReceiptSettings();
@@ -42,8 +43,8 @@ export default function ReceiptSettingsPage() {
         footerText: form.footerText || null,
       });
       toast('Receipt settings saved', 'success');
-    } catch {
-      toast('Failed to save receipt settings', 'error');
+    } catch (err: unknown) {
+      toast(getErrorMessage(err, 'Failed to save receipt settings'), 'error');
     }
   };
 

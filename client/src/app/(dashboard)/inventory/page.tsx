@@ -17,6 +17,7 @@ import {
 } from '@/hooks/api/useInventory';
 import { useBranches } from '@/hooks/api/useBranches';
 import { useUiStore } from '@/store/uiStore';
+import { getErrorMessage } from '@/lib/errors';
 import DataTable, { type Column } from '@/components/ui/DataTable';
 import Badge from '@/components/ui/Badge';
 import Drawer from '@/components/ui/Drawer';
@@ -65,9 +66,21 @@ export default function InventoryPage() {
 
   const canReview = user?.role === 'STORE_ADMIN' || user?.role === 'SUPER_ADMIN';
 
-  const { data: inventoryData, isLoading } = useInventory({ branchId, page, limit: 25 });
-  const { data: movementsData, isLoading: movementsLoading } = useStockMovements({ branchId, page, limit: 25 });
-  const { data: approvalsData, isLoading: approvalsLoading } = useAdjustmentRequests({
+  const { data: inventoryData, isLoading, isError, error, refetch } = useInventory({ branchId, page, limit: 25 });
+  const {
+    data: movementsData,
+    isLoading: movementsLoading,
+    isError: movementsError,
+    error: movementsErrorObj,
+    refetch: refetchMovements,
+  } = useStockMovements({ branchId, page, limit: 25 });
+  const {
+    data: approvalsData,
+    isLoading: approvalsLoading,
+    isError: approvalsError,
+    error: approvalsErrorObj,
+    refetch: refetchApprovals,
+  } = useAdjustmentRequests({
     status: approvalStatus || undefined,
     page,
     limit: 25,
@@ -149,8 +162,7 @@ export default function InventoryPage() {
           setAdjustItem(null);
         },
         onError: (err: unknown) => {
-          const e = err as { response?: { data?: { message?: string } } };
-          toast(e.response?.data?.message ?? 'Adjustment failed', 'error');
+          toast(getErrorMessage(err, 'Adjustment failed'), 'error');
         },
       },
     );
@@ -161,8 +173,7 @@ export default function InventoryPage() {
       await approveRequest({ id });
       toast('Adjustment approved and applied', 'success');
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { message?: string } } };
-      toast(e.response?.data?.message ?? 'Failed to approve', 'error');
+      toast(getErrorMessage(err, 'Failed to approve adjustment'), 'error');
     }
   };
 
@@ -173,8 +184,7 @@ export default function InventoryPage() {
       toast('Adjustment rejected', 'success');
       setReject({ open: false, requestId: '', note: '' });
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { message?: string } } };
-      toast(e.response?.data?.message ?? 'Failed to reject', 'error');
+      toast(getErrorMessage(err, 'Failed to reject adjustment'), 'error');
     }
   };
 
@@ -189,8 +199,7 @@ export default function InventoryPage() {
       {
         onSuccess: () => { toast('Stock transferred', 'success'); setTransferItem(null); },
         onError: (err: unknown) => {
-          const e = err as { response?: { data?: { message?: string } } };
-          toast(e.response?.data?.message ?? 'Transfer failed', 'error');
+          toast(getErrorMessage(err, 'Transfer failed'), 'error');
         },
       },
     );
@@ -235,6 +244,9 @@ export default function InventoryPage() {
           columns={stockColumns}
           data={inventoryData?.items ?? []}
           isLoading={isLoading}
+          isError={isError}
+          error={error}
+          onRetry={refetch}
           keyExtractor={(i) => i.productId}
           pagination={inventoryData?.meta}
           onPageChange={setPage}
@@ -242,7 +254,15 @@ export default function InventoryPage() {
           emptyDescription="Add products and stock to see them here"
         />
       ) : tab === 'movements' ? (
-        <MovementsTable data={movementsData?.items ?? []} isLoading={movementsLoading} pagination={movementsData?.meta} onPageChange={setPage} />
+        <MovementsTable
+          data={movementsData?.items ?? []}
+          isLoading={movementsLoading}
+          isError={movementsError}
+          error={movementsErrorObj}
+          onRetry={refetchMovements}
+          pagination={movementsData?.meta}
+          onPageChange={setPage}
+        />
       ) : (
         <div className="space-y-3">
           <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-xl w-fit">
@@ -263,6 +283,9 @@ export default function InventoryPage() {
           <ApprovalsTable
             data={approvalsData?.items ?? []}
             isLoading={approvalsLoading}
+            isError={approvalsError}
+            error={approvalsErrorObj}
+            onRetry={refetchApprovals}
             pagination={approvalsData?.meta}
             onPageChange={setPage}
             canReview={canReview}
@@ -382,9 +405,12 @@ const REASON_LABEL: Record<AdjustmentReason, string> = {
   OTHER: 'Other',
 };
 
-function MovementsTable({ data, isLoading, pagination, onPageChange }: {
+function MovementsTable({ data, isLoading, isError, error, onRetry, pagination, onPageChange }: {
   data: StockMovement[];
   isLoading: boolean;
+  isError?: boolean;
+  error?: unknown;
+  onRetry?: () => void;
   pagination?: { total: number; page: number; limit: number; totalPages: number };
   onPageChange?: (p: number) => void;
 }) {
@@ -414,6 +440,9 @@ function MovementsTable({ data, isLoading, pagination, onPageChange }: {
       columns={cols}
       data={data}
       isLoading={isLoading}
+      isError={isError}
+      error={error}
+      onRetry={onRetry}
       keyExtractor={(m) => m.id}
       pagination={pagination}
       onPageChange={onPageChange}
@@ -429,9 +458,12 @@ const APPROVAL_STATUS_VARIANT: Record<string, 'success' | 'warning' | 'error'> =
   PENDING: 'warning', APPROVED: 'success', REJECTED: 'error',
 };
 
-function ApprovalsTable({ data, isLoading, pagination, onPageChange, canReview, reviewing, onApprove, onReject }: {
+function ApprovalsTable({ data, isLoading, isError, error, onRetry, pagination, onPageChange, canReview, reviewing, onApprove, onReject }: {
   data: AdjustmentRequest[];
   isLoading: boolean;
+  isError?: boolean;
+  error?: unknown;
+  onRetry?: () => void;
   pagination?: { total: number; page: number; limit: number; totalPages: number };
   onPageChange?: (p: number) => void;
   canReview: boolean;
@@ -484,6 +516,9 @@ function ApprovalsTable({ data, isLoading, pagination, onPageChange, canReview, 
       columns={cols}
       data={data}
       isLoading={isLoading}
+      isError={isError}
+      error={error}
+      onRetry={onRetry}
       keyExtractor={(r) => r.id}
       pagination={pagination}
       onPageChange={onPageChange}

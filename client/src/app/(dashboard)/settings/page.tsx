@@ -6,6 +6,7 @@ import { Store as StoreIcon } from 'lucide-react';
 import { useStore, useUpdateStore, useUploadLogo } from '@/hooks/api/useStore';
 import { useUiStore } from '@/store/uiStore';
 import { useAuthStore } from '@/store/authStore';
+import { getErrorMessage } from '@/lib/errors';
 import { blockInvalidNumberKey } from '@/lib/numericInput';
 import Image from 'next/image';
 
@@ -61,8 +62,8 @@ export default function SettingsPage() {
         setLogoFile(null);
       }
       toast('Settings saved', 'success');
-    } catch {
-      toast('Failed to save settings', 'error');
+    } catch (err: unknown) {
+      toast(getErrorMessage(err, 'Failed to save settings'), 'error');
     }
   };
 

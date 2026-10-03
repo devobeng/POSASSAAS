@@ -2,13 +2,19 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { useCartStore } from './cartStore';
 import type { User } from '../types';
 
 const FLAG_COOKIE = 'pos-auth';
 
-function setSessionCookie() {
+// The cookie's value is the user's role, not just a boolean — role names
+// aren't sensitive, and both the Edge middleware and the root page are
+// server-side code with no access to the Zustand store, so this is the only
+// way they can send a SUPER_ADMIN (who has no storeId, and for whom every
+// per-store /dashboard call 400s) to /admin instead of /dashboard.
+function setSessionCookie(role: string) {
   if (typeof document === 'undefined') return;
-  document.cookie = `${FLAG_COOKIE}=1; path=/; SameSite=Lax`;
+  document.cookie = `${FLAG_COOKIE}=${role}; path=/; SameSite=Lax`;
 }
 
 function clearSessionCookie() {
@@ -84,7 +90,7 @@ export const useAuthStore = create<AuthState>()(
       accessToken: null,
 
       setAuth: (user, accessToken) => {
-        setSessionCookie();
+        setSessionCookie(user.role);
         set({ user, accessToken });
         scheduleRefresh(accessToken);
       },
@@ -101,6 +107,10 @@ export const useAuthStore = create<AuthState>()(
         }
         clearSessionCookie();
         set({ user: null, accessToken: null });
+        // A logged-out (or force-logged-out) session should never leave a
+        // cashier's in-progress sale sitting around for the next person who
+        // logs in on this device/terminal.
+        useCartStore.getState().clearCart();
       },
 
       isAuthenticated: () => !!get().user && !!get().accessToken,
