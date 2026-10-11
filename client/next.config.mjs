@@ -20,7 +20,10 @@ const withPWA = withPWAInit({
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone',
+  // Standalone output is only for the Docker image (which runs server.js).
+  // Hosts that run `next start` (e.g. Render) need the regular output —
+  // `next start` on a standalone build 500s with "reading 'clientModules'".
+  output: process.env.NEXT_OUTPUT === 'standalone' ? 'standalone' : undefined,
   images: {
     remotePatterns: [
       { protocol: 'https', hostname: 'res.cloudinary.com' },

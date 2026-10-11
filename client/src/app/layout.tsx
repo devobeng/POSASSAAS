@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
 import Providers from './providers';
 import './globals.css';
@@ -9,8 +9,11 @@ export const metadata: Metadata = {
   title: { default: 'POS SaaS', template: '%s | POS SaaS' },
   description: 'Multi-tenant Point of Sale platform',
   manifest: '/manifest.json',
-  themeColor: '#0284c7',
   appleWebApp: { capable: true, statusBarStyle: 'default', title: 'POS' },
+};
+
+export const viewport: Viewport = {
+  themeColor: '#0284c7',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
