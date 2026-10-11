@@ -164,11 +164,23 @@ export default function SettingsPage() {
                     <span className="font-medium">{trialDaysLeft(store.trialEndsAt)} day(s) left</span>
                   </div>
                 )}
+                {store.currentPeriodEnd && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Paid until (Mobile Money)</span>
+                    <span className="font-medium">
+                      {new Date(store.currentPeriodEnd).toLocaleDateString()}
+                      {store.subscriptionStatus === 'ACTIVE' &&
+                        ` · ${trialDaysLeft(store.currentPeriodEnd)} day(s) left`}
+                    </span>
+                  </div>
+                )}
                 <Link
                   href="/select-plan"
                   className="inline-block mt-1 text-sm text-primary-600 dark:text-primary-400 hover:underline"
                 >
-                  {store.subscriptionStatus === 'EXPIRED' ? 'Choose a plan →' : 'Change plan →'}
+                  {store.subscriptionStatus === 'EXPIRED'
+                    ? store.currentPeriodEnd ? 'Renew →' : 'Choose a plan →'
+                    : store.currentPeriodEnd ? 'Renew or change plan →' : 'Change plan →'}
                 </Link>
               </div>
             </div>

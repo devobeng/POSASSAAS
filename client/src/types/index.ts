@@ -71,6 +71,8 @@ export interface Store {
   subscriptionPlan?: SubscriptionPlan | null;
   subscriptionStatus: SubscriptionStatus;
   trialEndsAt?: string | null;
+  /** End of the prepaid (Mobile Money) period; null for card auto-renew/free. */
+  currentPeriodEnd?: string | null;
   stockAdjustmentThreshold?: number;
   createdAt: string;
 }

@@ -164,6 +164,11 @@ model Store {
   // way to stop Paystack from continuing to bill a cancelled/suspended store.
   paystackSubscriptionCode String?
   paystackEmailToken       String?
+  // End of the paid-up period for PREPAID billing (Mobile Money). Paystack
+  // can't auto-debit MoMo, so these stores pay N months up front and access
+  // lapses here unless they renew. Always null for card auto-renew stores
+  // (Paystack's own subscription drives their renewals) and for Free/trial.
+  currentPeriodEnd         DateTime?
   subscriptionPlanId       String?
   // BRANCH_MANAGER adjustments with |quantity| over this go to STORE_ADMIN
   // approval instead of applying immediately. STORE_ADMIN/SUPER_ADMIN
@@ -187,9 +192,34 @@ model Store {
   expenseCategories  ExpenseCategory[]
   expenses           Expense[]
   stockAdjustmentRequests StockAdjustmentRequest[]
+  subscriptionPayments    SubscriptionPayment[]
 
   @@index([slug])
   @@map("stores")
+}
+
+// Ledger of PREPAID subscription payments (Mobile Money). The unique
+// reference is what makes crediting a period idempotent: the webhook and the
+// client's verify poll both confirm the same charge, and only the first
+// insert wins — the loser's whole array-transaction rolls back, so a period
+// is never extended twice for one payment.
+model SubscriptionPayment {
+  id          String   @id @default(cuid())
+  storeId     String
+  planId      String?
+  reference   String   @unique
+  months      Int
+  amount      Int      // smallest currency unit actually charged
+  currency    String
+  periodStart DateTime
+  periodEnd   DateTime
+  createdAt   DateTime @default(now())
+
+  store Store             @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  plan  SubscriptionPlan? @relation(fields: [planId], references: [id], onDelete: SetNull)
+
+  @@index([storeId, createdAt])
+  @@map("subscription_payments")
 }
 
 model ReceiptSettings {
@@ -455,7 +485,8 @@ model SubscriptionPlan {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  stores Store[]
+  stores               Store[]
+  subscriptionPayments SubscriptionPayment[]
 
   @@map("subscription_plans")
 }

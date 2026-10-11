@@ -48,12 +48,20 @@ export function requireActiveSubscription() {
       } else {
         const store = await prisma.store.findUnique({
           where: { id: storeId },
-          select: { subscriptionStatus: true },
+          select: { subscriptionStatus: true, currentPeriodEnd: true },
         });
 
         if (!store) return next(new AppError('Store not found', 404));
 
-        status = store.subscriptionStatus;
+        // A prepaid (Mobile Money) period that has run out is expired from
+        // that instant — not only once the hourly expiry cron flips the
+        // stored status — so the lapse can't be ridden for up to an hour.
+        status =
+          store.subscriptionStatus === 'ACTIVE' &&
+          store.currentPeriodEnd &&
+          store.currentPeriodEnd.getTime() <= Date.now()
+            ? 'EXPIRED'
+            : store.subscriptionStatus;
         await cacheSet(statusCacheKey(storeId), status, STATUS_CACHE_TTL_MS);
       }
 

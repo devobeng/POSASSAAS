@@ -60,6 +60,10 @@ export function initializeTransaction(params: {
   // POST /subscription call needed (that's only for admin-initiated
   // subscriptions against an authorization you already hold).
   plan?: string;
+  // Restricts which payment options Paystack's checkout shows, e.g.
+  // ['mobile_money']. Omitted = whatever the integration has enabled.
+  channels?: string[];
+  currency?: string;
 }): Promise<TransactionInit> {
   return paystackRequest<TransactionInit>('POST', '/transaction/initialize', params as Record<string, unknown>);
 }
@@ -68,6 +72,8 @@ export interface TransactionVerification {
   status: 'success' | 'failed' | 'abandoned';
   reference: string;
   amount: number;
+  currency?: string;
+  channel?: string;
   customer: { email: string; customer_code: string };
   metadata: Record<string, unknown>;
 }

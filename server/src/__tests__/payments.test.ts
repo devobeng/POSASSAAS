@@ -46,6 +46,10 @@ jest.mock('../config/database', () => ({
       update: jest.fn(),
       findMany: jest.fn(),
     },
+    subscriptionPayment: {
+      findUnique: jest.fn(),
+      create: jest.fn(),
+    },
     auditLog: { create: jest.fn() },
     $transaction: jest.fn(),
   },
@@ -71,6 +75,7 @@ const { prisma } = require('../config/database') as {
     user: { findUnique: jest.Mock; count: jest.Mock };
     branch: { count: jest.Mock };
     webhookEvent: { create: jest.Mock; update: jest.Mock; findMany: jest.Mock };
+    subscriptionPayment: { findUnique: jest.Mock; create: jest.Mock };
     auditLog: { create: jest.Mock };
     $transaction: jest.Mock;
   };
@@ -643,5 +648,224 @@ describe('POST /api/v1/payments/subscribe', () => {
     expect(res.status).toBe(409);
     expect(paystackSvc.createPlan).not.toHaveBeenCalled();
     expect(paystackSvc.initializeTransaction).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Prepaid (Mobile Money) subscriptions ─────────────────────────────────────
+
+describe('Prepaid Mobile Money subscriptions', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const PLAN_ID = 'plan-pro';
+
+  function mockSubscribeLookups(storeOverrides: Record<string, unknown> = {}) {
+    prisma.store.findUnique.mockResolvedValue({
+      id: STORE_ID,
+      subscriptionPlanId: 'plan-starter',
+      subscriptionStatus: 'ACTIVE',
+      paystackCustomerCode: 'CUS_existing',
+      paystackSubscriptionCode: null,
+      paystackEmailToken: null,
+      currentPeriodEnd: null,
+      ...storeOverrides,
+    });
+    prisma.subscriptionPlan.findUnique.mockResolvedValueOnce({
+      id: PLAN_ID,
+      price: '20.00',
+      name: 'Pro',
+      maxBranches: 10,
+      maxUsers: 10,
+      paystackPlanCode: null,
+      paystackPlanAmount: null,
+    });
+    prisma.user.findUnique.mockResolvedValue({ name: 'Jane Admin' });
+    prisma.branch.count.mockResolvedValue(1);
+    prisma.user.count.mockResolvedValue(1);
+    paystackSvc.initializeTransaction.mockResolvedValue({
+      authorization_url: 'https://checkout.paystack.com/momo',
+      access_code: 'access_momo',
+      reference: 'ref_momo',
+    });
+  }
+
+  it('initializes a one-off mobile_money GHS charge for price × months, with no Paystack Plan', async () => {
+    mockSubscribeLookups();
+
+    const res = await request(app)
+      .post('/api/v1/payments/subscribe')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ planId: PLAN_ID, method: 'mobile_money', months: 3 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual(expect.objectContaining({ prepaid: true, months: 3, amount: 6000 }));
+    expect(paystackSvc.createPlan).not.toHaveBeenCalled();
+    const args = paystackSvc.initializeTransaction.mock.calls[0][0];
+    expect(args).toEqual(
+      expect.objectContaining({
+        amount: 6000,
+        currency: 'GHS',
+        channels: ['mobile_money'],
+        metadata: expect.objectContaining({
+          storeId: STORE_ID,
+          planId: PLAN_ID,
+          type: 'subscription_prepaid',
+          months: 3,
+          expectedAmount: 6000,
+        }),
+      }),
+    );
+    expect(args.plan).toBeUndefined();
+  });
+
+  it('lets a prepaid store renew the plan it is already on (not an "already active" no-op)', async () => {
+    mockSubscribeLookups({ subscriptionPlanId: PLAN_ID, currentPeriodEnd: new Date(Date.now() + 86_400_000) });
+
+    const res = await request(app)
+      .post('/api/v1/payments/subscribe')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ planId: PLAN_ID, method: 'mobile_money', months: 1 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.alreadyActive).toBeUndefined();
+    expect(paystackSvc.initializeTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cancel a live card subscription just for starting a MoMo checkout', async () => {
+    mockSubscribeLookups({ paystackSubscriptionCode: 'SUB_card', paystackEmailToken: 'tok' });
+
+    await request(app)
+      .post('/api/v1/payments/subscribe')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ planId: PLAN_ID, method: 'mobile_money', months: 1 });
+
+    // cancelExistingSubscription would clear the pointer via store.update
+    expect(prisma.store.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unsupported months value → 422', async () => {
+    const res = await request(app)
+      .post('/api/v1/payments/subscribe')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ planId: PLAN_ID, method: 'mobile_money', months: 2 });
+
+    expect(res.status).toBe(422);
+    expect(paystackSvc.initializeTransaction).not.toHaveBeenCalled();
+  });
+
+  async function sendPrepaidWebhook(data: Record<string, unknown>) {
+    const body = buildWebhookBody({ event: 'charge.success', data });
+    paystackSvc.verifyWebhookSignature.mockReturnValue(true);
+    await request(app)
+      .post('/api/v1/payments/webhook')
+      .set('Content-Type', 'application/json')
+      .set('x-paystack-signature', sign(body))
+      .send(body);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  const prepaidMeta = {
+    storeId: STORE_ID,
+    planId: PLAN_ID,
+    type: 'subscription_prepaid',
+    months: 3,
+    expectedAmount: 6000,
+  };
+
+  it('webhook credits the period, stacking onto remaining paid time on the same plan', async () => {
+    const currentEnd = new Date(Date.UTC(2030, 0, 15));
+    const newEnd = new Date(Date.UTC(2030, 3, 15));
+    prisma.payment.findUnique.mockResolvedValue(null);
+    prisma.subscriptionPayment.findUnique.mockResolvedValue(null);
+    prisma.store.findUnique.mockResolvedValue({
+      subscriptionPlanId: PLAN_ID,
+      subscriptionStatus: 'ACTIVE',
+      currentPeriodEnd: currentEnd,
+      trialEndsAt: null,
+      paystackSubscriptionCode: null,
+      paystackEmailToken: null,
+    });
+    prisma.$transaction.mockResolvedValue([{}, {}, {}]);
+
+    await sendPrepaidWebhook({ reference: 'ref_momo', amount: 6000, currency: 'GHS', metadata: prepaidMeta });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.subscriptionPayment.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        reference: 'ref_momo',
+        months: 3,
+        amount: 6000,
+        periodStart: currentEnd,
+        periodEnd: newEnd,
+      }),
+    });
+    expect(prisma.store.update).toHaveBeenCalledWith({
+      where: { id: STORE_ID },
+      data: { subscriptionPlanId: PLAN_ID, currentPeriodEnd: newEnd, trialEndsAt: null },
+    });
+  });
+
+  it('skips a reference that was already credited (webhook + verify both confirm one charge)', async () => {
+    prisma.payment.findUnique.mockResolvedValue(null);
+    prisma.subscriptionPayment.findUnique.mockResolvedValue({ id: 'sp-1', reference: 'ref_momo' });
+
+    await sendPrepaidWebhook({ reference: 'ref_momo', amount: 6000, metadata: prepaidMeta });
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('treats a unique-reference race (P2002) as already credited, not a failure', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Prisma } = require('@prisma/client');
+    prisma.payment.findUnique.mockResolvedValue(null);
+    prisma.subscriptionPayment.findUnique.mockResolvedValue(null);
+    prisma.store.findUnique.mockResolvedValue({
+      subscriptionPlanId: 'plan-starter',
+      subscriptionStatus: 'ACTIVE',
+      currentPeriodEnd: null,
+      trialEndsAt: null,
+      paystackSubscriptionCode: null,
+      paystackEmailToken: null,
+    });
+    prisma.$transaction.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: '5' }),
+    );
+
+    await sendPrepaidWebhook({ reference: 'ref_momo', amount: 6000, metadata: prepaidMeta });
+
+    expect(prisma.webhookEvent.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'PROCESSED' }) }),
+    );
+  });
+
+  it('never credits an underpayment', async () => {
+    prisma.payment.findUnique.mockResolvedValue(null);
+    prisma.subscriptionPayment.findUnique.mockResolvedValue(null);
+
+    await sendPrepaidWebhook({ reference: 'ref_momo', amount: 2000, metadata: prepaidMeta });
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('blocks writes the moment a prepaid period has lapsed, before the cron flips status → 402', async () => {
+    prisma.store.findUnique.mockResolvedValue({
+      subscriptionStatus: 'ACTIVE',
+      currentPeriodEnd: new Date(Date.now() - 60_000),
+    });
+
+    const res = await request(app)
+      .post('/api/v1/payments/initialize')
+      .set('Authorization', `Bearer ${cashierToken()}`)
+      .send({ orderId: ORDER_ID });
+
+    expect(res.status).toBe(402);
+    expect(res.body.errors).toBe('SUBSCRIPTION_INACTIVE');
+  });
+
+  it('addMonthsUtc clamps to the end of shorter months', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { addMonthsUtc } = require('../modules/payments/payments.service');
+    expect(addMonthsUtc(new Date(Date.UTC(2028, 0, 31)), 1)).toEqual(new Date(Date.UTC(2028, 1, 29)));
+    expect(addMonthsUtc(new Date(Date.UTC(2027, 10, 30)), 3)).toEqual(new Date(Date.UTC(2028, 1, 29)));
+    expect(addMonthsUtc(new Date(Date.UTC(2027, 0, 10)), 12)).toEqual(new Date(Date.UTC(2028, 0, 10)));
   });
 });

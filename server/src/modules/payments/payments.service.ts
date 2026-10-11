@@ -106,6 +106,8 @@ async function handleChargeSuccess(data: {
   reference: string;
   metadata?: Record<string, unknown>;
   customer?: { customer_code: string };
+  amount?: number;
+  currency?: string;
 }) {
   const { reference, metadata, customer } = data;
 
@@ -116,7 +118,18 @@ async function handleChargeSuccess(data: {
 
   if (!payment) {
     // No Payment row — this is SaaS subscription billing, not a POS order
-    // payment. Two distinct cases:
+    // payment. Three distinct cases:
+    if (metadata?.type === PREPAID_METADATA_TYPE && metadata.storeId && metadata.planId) {
+      // A prepaid (Mobile Money) period purchase.
+      await applyPrepaidPayment({
+        reference,
+        metadata,
+        amountPaid: data.amount ?? 0,
+        currency: data.currency,
+      });
+      return;
+    }
+
     if (metadata?.type === 'subscription' && metadata.storeId && metadata.planId) {
       // The very first checkout — we initialized this transaction ourselves,
       // so our metadata is guaranteed to be there.
@@ -400,6 +413,157 @@ export async function replayStuckWebhookEvents(olderThanMs = 2 * 60 * 1000): Pro
 
 // ─── SaaS subscription flow ───────────────────────────────────────────────────
 
+/** metadata.type on prepaid (Mobile Money) subscription checkouts. */
+const PREPAID_METADATA_TYPE = 'subscription_prepaid';
+/** Paystack only offers mobile_money for GHS (and KES) — plans are priced
+ *  in GHS, so prepaid checkouts pin it rather than relying on the
+ *  integration's default currency. */
+const PREPAID_CURRENCY = 'GHS';
+
+/** Adds calendar months in UTC, clamping to the target month's last day
+ *  (Jan 31 + 1 month = Feb 28/29, not Mar 3). */
+export function addMonthsUtc(date: Date, months: number): Date {
+  const d = new Date(date.getTime());
+  const day = d.getUTCDate();
+  d.setUTCDate(1);
+  d.setUTCMonth(d.getUTCMonth() + months);
+  const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+  d.setUTCDate(Math.min(day, lastDay));
+  return d;
+}
+
+/** Credits a confirmed prepaid (Mobile Money) payment to the store: records
+ *  it in the SubscriptionPayment ledger and extends currentPeriodEnd.
+ *
+ *  Called from both the charge.success webhook and the client's verify poll
+ *  for the same charge — the ledger's unique `reference` makes that safe:
+ *  whichever runs second hits P2002, its whole array-transaction (ledger row
+ *  + store update) rolls back, and the period is extended exactly once.
+ *  (Two DIFFERENT payments for one store confirmed at the same instant could
+ *  both read the same currentPeriodEnd and one extension be lost — not
+ *  realistic for one store admin paying through one checkout at a time.) */
+async function applyPrepaidPayment(args: {
+  reference: string;
+  metadata: Record<string, unknown>;
+  amountPaid: number;
+  currency?: string;
+}): Promise<void> {
+  const { reference, metadata, amountPaid } = args;
+  const storeId = metadata.storeId as string;
+  const planId = metadata.planId as string;
+  const months = Number(metadata.months);
+  const expectedAmount = Number(metadata.expectedAmount);
+
+  const existing = await prisma.subscriptionPayment.findUnique({ where: { reference } });
+  if (existing) return; // already credited
+
+  if (!Number.isInteger(months) || months < 1 || !(amountPaid >= expectedAmount)) {
+    // Never credit an underpayment or malformed checkout. Not thrown — a
+    // throw would mark the webhook FAILED and replay it every 5 minutes
+    // forever; this needs a human, so leave a loud, queryable trail instead.
+    logger.error(
+      `[billing] Prepaid payment ${reference} for store ${storeId} not credited — ` +
+        `paid ${amountPaid}, expected ${expectedAmount}, months ${String(metadata.months)}`,
+    );
+    void auditLog({
+      storeId,
+      userId: 'system',
+      action: 'SUBSCRIPTION_PAYMENT_REJECTED',
+      entity: 'Store',
+      entityId: storeId,
+      metadata: { reference, amountPaid, expectedAmount, months: metadata.months },
+    }).catch(() => {});
+    return;
+  }
+
+  const store = await prisma.store.findUnique({
+    where: { id: storeId },
+    select: {
+      subscriptionPlanId: true,
+      subscriptionStatus: true,
+      currentPeriodEnd: true,
+      trialEndsAt: true,
+      paystackSubscriptionCode: true,
+      paystackEmailToken: true,
+    },
+  });
+  if (!store) {
+    logger.error(`[billing] Prepaid payment ${reference}: store ${storeId} not found`);
+    return;
+  }
+
+  // Renewing the same plan early stacks onto the remaining paid time; an
+  // unexpired trial is honoured too. A plan change starts fresh from now —
+  // leftover time on a different (e.g. cheaper) plan doesn't carry over.
+  const now = new Date();
+  let periodStart = now;
+  if (
+    store.subscriptionPlanId === planId &&
+    store.subscriptionStatus === 'ACTIVE' &&
+    store.currentPeriodEnd &&
+    store.currentPeriodEnd > now
+  ) {
+    periodStart = store.currentPeriodEnd;
+  } else if (store.subscriptionStatus === 'TRIAL' && store.trialEndsAt && store.trialEndsAt > now) {
+    periodStart = store.trialEndsAt;
+  }
+  const periodEnd = addMonthsUtc(periodStart, months);
+
+  try {
+    await prisma.$transaction([
+      prisma.subscriptionPayment.create({
+        data: {
+          storeId,
+          planId,
+          reference,
+          months,
+          amount: amountPaid,
+          currency: args.currency ?? PREPAID_CURRENCY,
+          periodStart,
+          periodEnd,
+        },
+      }),
+      prisma.store.update({
+        where: { id: storeId },
+        data: { subscriptionPlanId: planId, currentPeriodEnd: periodEnd, trialEndsAt: null },
+      }),
+      // SUSPENDED is an admin-only lock — the payment and paid-up date are
+      // still recorded (so an admin reactivating later restores the time
+      // they paid for), but billing must never lift the suspension itself.
+      prisma.store.updateMany({
+        where: { id: storeId, subscriptionStatus: { not: 'SUSPENDED' } },
+        data: { subscriptionStatus: 'ACTIVE' },
+      }),
+    ]);
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') return;
+    throw err;
+  }
+  await invalidateSubscriptionStatusCache(storeId);
+
+  // Moving from card auto-renew to prepaid: stop the card subscription now
+  // that the MoMo payment is confirmed. Best-effort — the payment is already
+  // credited; a failure is logged by cancelExistingSubscription for follow-up
+  // (and surfaced by the daily billing reconcile).
+  if (store.paystackSubscriptionCode) {
+    await cancelExistingSubscription(
+      storeId,
+      store.paystackSubscriptionCode,
+      store.paystackEmailToken,
+      { throwOnFailure: false },
+    );
+  }
+
+  void auditLog({
+    storeId,
+    userId: 'system',
+    action: 'SUBSCRIPTION_PREPAID',
+    entity: 'Store',
+    entityId: storeId,
+    metadata: { reference, planId, months, amount: amountPaid, periodEnd: periodEnd.toISOString() },
+  }).catch(() => {});
+}
+
 /** Activates a plan on a store directly — used for the Free plan (no payment)
  *  and by the paid-plan verify/webhook paths once Paystack confirms payment.
  *
@@ -421,6 +585,9 @@ async function activateSubscription(
       subscriptionPlanId: planId,
       subscriptionStatus: 'ACTIVE',
       trialEndsAt: null,
+      // Card (Paystack-driven renewal) and Free have no local expiry — a
+      // leftover prepaid end date would make the expiry cron lock them out.
+      currentPeriodEnd: null,
       ...(opts?.clearPaystackSubscription && {
         paystackSubscriptionCode: null,
         paystackEmailToken: null,
@@ -495,7 +662,11 @@ export async function subscribeToPlan(
   storeAdminEmail: string,
   planId: string,
   callbackUrl?: string,
+  opts: { method?: 'card' | 'mobile_money'; months?: number } = {},
 ) {
+  const method = opts.method ?? 'card';
+  const months = opts.months ?? 1;
+
   const [store, plan, adminUser] = await Promise.all([
     prisma.store.findUnique({
       where: { id: storeId },
@@ -506,6 +677,7 @@ export async function subscribeToPlan(
         paystackCustomerCode: true,
         paystackSubscriptionCode: true,
         paystackEmailToken: true,
+        currentPeriodEnd: true,
       },
     }),
     prisma.subscriptionPlan.findUnique({
@@ -539,8 +711,18 @@ export async function subscribeToPlan(
   // the "new" checkout that follows is abandoned. This is the realistic
   // path for a double-submit, browser-back resubmit, or a stale page that
   // hasn't refreshed its "current plan" state yet.
-  if (store.subscriptionStatus === 'ACTIVE' && store.subscriptionPlanId === planId) {
-    return { free: Number(plan.price) === 0, alreadyActive: true as const };
+  //
+  // Prepaid (Mobile Money) is exempt: paying again on the same plan is how a
+  // prepaid store renews/extends, not a duplicate. A prepaid store switching
+  // to card on the same plan is also a real change (to auto-renew), so the
+  // no-op only applies to an existing card/free store (no currentPeriodEnd).
+  const isFreePlan = Number(plan.price) === 0;
+  if (
+    store.subscriptionStatus === 'ACTIVE' &&
+    store.subscriptionPlanId === planId &&
+    (isFreePlan || (method === 'card' && !store.currentPeriodEnd))
+  ) {
+    return { free: isFreePlan, alreadyActive: true as const };
   }
 
   // A switch (including a downgrade to Free) must not silently leave the
@@ -577,6 +759,30 @@ export async function subscribeToPlan(
     // lost track of.
     await activateSubscription(storeId, planId, { clearPaystackSubscription: cancelled });
     return { free: true as const };
+  }
+
+  if (method === 'mobile_money') {
+    // One-off charge, no Paystack Plan — a Plan would force card-only
+    // checkout. Any live card subscription is deliberately NOT cancelled
+    // here: if this MoMo checkout is abandoned, the store must keep its
+    // working auto-renew. applyPrepaidPayment cancels it once the MoMo
+    // payment is actually confirmed.
+    const amountInSmallestUnit = Math.round(Number(plan.price) * 100) * months;
+    const txInit = await paystack.initializeTransaction({
+      email: storeAdminEmail,
+      amount: amountInSmallestUnit,
+      currency: PREPAID_CURRENCY,
+      channels: ['mobile_money'],
+      callback_url: callbackUrl,
+      metadata: {
+        storeId,
+        planId,
+        type: PREPAID_METADATA_TYPE,
+        months,
+        expectedAmount: amountInSmallestUnit,
+      },
+    });
+    return { free: false as const, prepaid: true as const, months, amount: amountInSmallestUnit, ...txInit };
   }
 
   // Switching plans (or retrying) — cancel whatever subscription is
@@ -667,8 +873,17 @@ async function verifySubscriptionPayment(reference: string, storeId: string) {
   }
 
   if (tx.status === 'success') {
-    const planId = tx.metadata.planId as string;
-    await activateSubscription(storeId, planId);
+    if (tx.metadata.type === PREPAID_METADATA_TYPE) {
+      await applyPrepaidPayment({
+        reference,
+        metadata: tx.metadata,
+        amountPaid: tx.amount,
+        currency: tx.currency,
+      });
+    } else {
+      const planId = tx.metadata.planId as string;
+      await activateSubscription(storeId, planId);
+    }
   }
 
   return { paystackStatus: tx.status };
@@ -680,6 +895,8 @@ export async function getSubscriptionStatus(storeId: string) {
     select: {
       subscriptionStatus: true,
       trialEndsAt: true,
+      currentPeriodEnd: true,
+      paystackSubscriptionCode: true,
       subscriptionPlan: {
         select: { id: true, name: true, price: true, maxBranches: true, maxUsers: true, features: true },
       },
@@ -687,5 +904,13 @@ export async function getSubscriptionStatus(storeId: string) {
   });
 
   if (!store) throw new AppError('Store not found', 404);
-  return store;
+  const { paystackSubscriptionCode, ...rest } = store;
+  return {
+    ...rest,
+    billingMode: store.currentPeriodEnd
+      ? ('prepaid' as const)
+      : paystackSubscriptionCode
+        ? ('card' as const)
+        : ('none' as const),
+  };
 }

@@ -28,6 +28,31 @@ export async function expireOverdueTrials(): Promise<void> {
   logger.info(`[subscription-cron] Expired ${overdue.length} overdue trial(s)`);
 }
 
+/** Flips ACTIVE prepaid (Mobile Money) stores whose paid-up period has
+ *  ended to EXPIRED. Card stores never have currentPeriodEnd set — Paystack's
+ *  own subscription webhooks drive their status. */
+export async function expireLapsedPrepaidPeriods(): Promise<void> {
+  const lapsed = await prisma.store.findMany({
+    where: { subscriptionStatus: 'ACTIVE', currentPeriodEnd: { lte: new Date() } },
+    select: { id: true },
+  });
+  if (lapsed.length === 0) return;
+
+  await prisma.store.updateMany({
+    where: {
+      id: { in: lapsed.map((s) => s.id) },
+      // Re-checked in the write itself: a renewal confirmed between the read
+      // above and this update must not be expired anyway.
+      subscriptionStatus: 'ACTIVE',
+      currentPeriodEnd: { lte: new Date() },
+    },
+    data: { subscriptionStatus: 'EXPIRED' },
+  });
+  await Promise.all(lapsed.map((s) => invalidateSubscriptionStatusCache(s.id)));
+
+  logger.info(`[subscription-cron] Expired ${lapsed.length} lapsed prepaid period(s)`);
+}
+
 /** Compares each subscribed store's local subscriptionStatus against what
  *  Paystack actually thinks that subscription's state is. The suspend/
  *  activate flow in admin.service.ts fails open by design (a Paystack
@@ -118,6 +143,9 @@ export function startSubscriptionCron(): void {
   reconcileSubscriptionBilling().catch((err) =>
     logger.error('[billing-reconcile] Catch-up failed', err),
   );
+  expireLapsedPrepaidPeriods().catch((err) =>
+    logger.error('[prepaid-expiry] Catch-up failed', err),
+  );
   replayStuckWebhookEvents().catch((err) =>
     logger.error('[webhook-replay] Catch-up failed', err),
   );
@@ -136,6 +164,15 @@ export function startSubscriptionCron(): void {
     );
   });
 
+  // Hourly at :20 — prepaid periods end at arbitrary times of day (whenever
+  // the store paid), so a daily run would leave the stored status stale for
+  // up to 24h. Writes are blocked at expiry regardless (subscription middleware).
+  cron.schedule('20 * * * *', () => {
+    expireLapsedPrepaidPeriods().catch((err) =>
+      logger.error('[prepaid-expiry] Scheduled run failed', err),
+    );
+  });
+
   // Every 5 minutes — a stuck webhook event is a crashed/failed charge or
   // subscription update sitting unresolved, so this needs a much tighter
   // loop than the daily jobs above rather than waiting up to 24h to recover.
@@ -147,5 +184,6 @@ export function startSubscriptionCron(): void {
 
   logger.info('[subscription-cron] Scheduled (daily 00:10 + boot catch-up)');
   logger.info('[billing-reconcile] Scheduled (daily 00:15 + boot catch-up)');
+  logger.info('[prepaid-expiry] Scheduled (hourly :20 + boot catch-up)');
   logger.info('[webhook-replay] Scheduled (every 5 min + boot catch-up)');
 }

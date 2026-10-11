@@ -19,17 +19,18 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     // suppressHydrationWarning prevents React mismatch when the inline script
-    // adds the 'dark' class before hydration.
-    <html lang="en" suppressHydrationWarning>
+    // removes the 'dark' class (light preference) before hydration.
+    <html lang="en" className="dark" suppressHydrationWarning>
       <head>
-        {/* Apply dark theme before first paint to avoid flash */}
+        {/* Dark is the default — <html> is server-rendered with class="dark"
+            so it's dark from the very first byte. Only an explicit 'light'
+            choice (saved by the Topbar toggle) removes it, before first paint. */}
         <script
           dangerouslySetInnerHTML={{
             __html: `
               try {
-                var t = localStorage.getItem('theme');
-                if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-                  document.documentElement.classList.add('dark');
+                if (localStorage.getItem('theme') === 'light') {
+                  document.documentElement.classList.remove('dark');
                 }
               } catch(e) {}
             `,

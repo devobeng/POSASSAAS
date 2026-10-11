@@ -3,15 +3,21 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Check } from 'lucide-react';
-import { usePlans, useSubscriptionStatus, useSubscribeToPlan } from '@/hooks/api/usePlans';
+import {
+  usePlans,
+  useSubscriptionStatus,
+  useSubscribeToPlan,
+  PREPAID_MONTH_OPTIONS,
+  type BillingMethod,
+} from '@/hooks/api/usePlans';
 import { useUiStore } from '@/store/uiStore';
 import api from '@/lib/axios';
 import { getErrorMessage } from '@/lib/errors';
 import type { SubscriptionPlan } from '@/types';
 
-function daysLeft(trialEndsAt: string | null): number | null {
-  if (!trialEndsAt) return null;
-  const ms = new Date(trialEndsAt).getTime() - Date.now();
+function daysLeft(until: string | null): number | null {
+  if (!until) return null;
+  const ms = new Date(until).getTime() - Date.now();
   return Math.max(0, Math.ceil(ms / (24 * 60 * 60 * 1000)));
 }
 
@@ -36,6 +42,14 @@ export default function SelectPlanPage() {
 
   const [selectingId, setSelectingId] = useState<string | null>(null);
   const [waitingRef, setWaitingRef] = useState<string | null>(null);
+  const [waitingMethod, setWaitingMethod] = useState<BillingMethod>('card');
+  const [method, setMethod] = useState<BillingMethod>('card');
+  const [months, setMonths] = useState<number>(1);
+
+  // A store already on prepaid MoMo most likely wants to renew the same way.
+  useEffect(() => {
+    if (status?.billingMode === 'prepaid') setMethod('mobile_money');
+  }, [status?.billingMode]);
 
   // Poll for checkout completion once a paid-plan popup is open — mirrors the
   // same pattern used for in-store Paystack payments (ChargeModal.tsx).
@@ -59,7 +73,13 @@ export default function SelectPlanPage() {
   const handleSelect = async (plan: SubscriptionPlan) => {
     setSelectingId(plan.id);
     try {
-      const result = await subscribe(plan.id);
+      const isFree = parseFloat(plan.price) === 0;
+      const payMethod: BillingMethod = isFree ? 'card' : method;
+      const result = await subscribe({
+        planId: plan.id,
+        method: payMethod,
+        ...(payMethod === 'mobile_money' && { months }),
+      });
       if (result.alreadyActive) {
         toast('You are already on this plan', 'info');
         return;
@@ -71,6 +91,7 @@ export default function SelectPlanPage() {
       }
       if (result.authorization_url && result.reference) {
         setWaitingRef(result.reference);
+        setWaitingMethod(payMethod);
         window.open(result.authorization_url, '_blank', 'noopener');
       }
     } catch (err: unknown) {
@@ -81,8 +102,10 @@ export default function SelectPlanPage() {
   };
 
   const isLoading = plansLoading || statusLoading;
-  const trialDays = status ? daysLeft(status.trialEndsAt) : null;
+  const trialDays = status?.subscriptionStatus === 'TRIAL' ? daysLeft(status.trialEndsAt) : null;
+  const paidDays = status?.billingMode === 'prepaid' ? daysLeft(status.currentPeriodEnd) : null;
   const currentPlanId = status?.subscriptionPlan?.id;
+  const isPrepaid = status?.billingMode === 'prepaid';
 
   if (status?.subscriptionStatus === 'SUSPENDED') {
     return (
@@ -101,7 +124,9 @@ export default function SelectPlanPage() {
         <div className="w-12 h-12 rounded-full border-4 border-primary-200 border-t-primary-600 animate-spin mx-auto" />
         <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Waiting for payment…</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">
-          Complete checkout in the tab that just opened. This page updates automatically once payment succeeds.
+          {waitingMethod === 'mobile_money'
+            ? 'Enter your Mobile Money number in the tab that just opened, then approve the prompt on your phone. This page updates automatically once payment succeeds.'
+            : 'Complete checkout in the tab that just opened. This page updates automatically once payment succeeds.'}
         </p>
         <button
           onClick={() => setWaitingRef(null)}
@@ -119,7 +144,15 @@ export default function SelectPlanPage() {
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Choose your plan</h1>
         {status?.subscriptionStatus === 'EXPIRED' ? (
           <p className="text-sm text-red-600 dark:text-red-400 mt-1">
-            Your trial has ended. Pick a plan to keep using the app.
+            {isPrepaid
+              ? 'Your paid period has ended. Renew to keep using the app.'
+              : 'Your trial has ended. Pick a plan to keep using the app.'}
+          </p>
+        ) : paidDays !== null && status?.currentPeriodEnd ? (
+          <p className={`text-sm mt-1 ${paidDays <= 7 ? 'text-amber-600 dark:text-amber-400' : 'text-gray-500 dark:text-gray-400'}`}>
+            Paid until {new Date(status.currentPeriodEnd).toLocaleDateString()} ({paidDays} day
+            {paidDays === 1 ? '' : 's'} left). Mobile Money doesn&apos;t renew automatically — pay again
+            below to extend.
           </p>
         ) : trialDays !== null ? (
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
@@ -134,6 +167,49 @@ export default function SelectPlanPage() {
         )}
       </div>
 
+      <div className="rounded-2xl border border-gray-200 dark:border-gray-700 p-4 space-y-3">
+        <p className="text-sm font-medium text-gray-900 dark:text-gray-100">How do you want to pay?</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {([
+            { value: 'card', title: 'Card', hint: 'Auto-renews every month' },
+            { value: 'mobile_money', title: 'Mobile Money', hint: 'Prepay 1–12 months, renew manually' },
+          ] as const).map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setMethod(opt.value)}
+              className={`text-left rounded-xl border px-4 py-3 transition-colors ${
+                method === opt.value
+                  ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
+                  : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
+              }`}
+            >
+              <span className="block text-sm font-semibold text-gray-900 dark:text-gray-100">{opt.title}</span>
+              <span className="block text-xs text-gray-500 dark:text-gray-400">{opt.hint}</span>
+            </button>
+          ))}
+        </div>
+        {method === 'mobile_money' && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-gray-600 dark:text-gray-400">Pay for:</span>
+            {PREPAID_MONTH_OPTIONS.map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setMonths(m)}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                  months === m
+                    ? 'border-primary-500 bg-primary-600 text-white'
+                    : 'border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:border-gray-300'
+                }`}
+              >
+                {m} month{m === 1 ? '' : 's'}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
       {isLoading ? (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {[1, 2, 3].map((n) => (
@@ -143,8 +219,21 @@ export default function SelectPlanPage() {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {plans?.map((plan) => {
-            const isCurrent = plan.id === currentPlanId;
             const price = parseFloat(plan.price);
+            const onThisPlan = plan.id === currentPlanId && status?.subscriptionStatus === 'ACTIVE';
+            const momo = method === 'mobile_money' && price > 0;
+            // MoMo on the current plan is a renewal, so only a card (or free)
+            // store re-picking its own plan is a true no-op.
+            const isCurrent = onThisPlan && (price === 0 || (!momo && !isPrepaid));
+            const buttonLabel = isCurrent
+              ? 'Current plan'
+              : selectingId === plan.id
+                ? 'Starting…'
+                : price === 0
+                  ? 'Switch to Free'
+                  : momo
+                    ? onThisPlan && isPrepaid ? 'Extend with MoMo' : 'Pay with MoMo'
+                    : 'Subscribe with card';
             return (
               <div
                 key={plan.id}
@@ -159,6 +248,11 @@ export default function SelectPlanPage() {
                   {price === 0 ? 'Free' : `GHS ${price.toFixed(2)}`}
                   {price > 0 && <span className="text-sm font-normal text-gray-400">/month</span>}
                 </p>
+                {momo && months > 1 && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    GHS {(price * months).toFixed(2)} for {months} months
+                  </p>
+                )}
                 <ul className="mt-4 space-y-1.5 flex-1">
                   {planFeatureList(plan).map((f) => (
                     <li key={f} className="text-sm text-gray-600 dark:text-gray-400 flex items-center gap-2">
@@ -175,7 +269,7 @@ export default function SelectPlanPage() {
                       : 'bg-primary-600 hover:bg-primary-700 text-white'
                   }`}
                 >
-                  {isCurrent ? 'Current plan' : selectingId === plan.id ? 'Starting…' : price === 0 ? 'Switch to Free' : 'Select & pay'}
+                  {buttonLabel}
                 </button>
               </div>
             );

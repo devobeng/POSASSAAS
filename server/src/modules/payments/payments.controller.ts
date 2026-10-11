@@ -82,7 +82,7 @@ export const subscribe = asyncHandler(async (req: Request, res: Response) => {
 
   if (!email) throw new AppError('User email required', 400);
 
-  const { planId, callbackUrl } = subscribeSchema.parse(req.body);
+  const { planId, callbackUrl, method, months } = subscribeSchema.parse(req.body);
 
   const txInit = await paymentsService.subscribeToPlan(
     storeId,
@@ -90,6 +90,7 @@ export const subscribe = asyncHandler(async (req: Request, res: Response) => {
     email,
     planId,
     callbackUrl,
+    { method, months },
   );
 
   const message =
@@ -97,6 +98,8 @@ export const subscribe = asyncHandler(async (req: Request, res: Response) => {
       ? 'You are already on this plan'
       : txInit.free
         ? 'Free plan activated'
+        : 'prepaid' in txInit
+          ? 'Mobile Money checkout initialized — approve the prompt on your phone'
         : 'Subscription initialized — complete payment to activate';
 
   sendSuccess(res, txInit, message);
