@@ -18,7 +18,10 @@ export const REFRESH_COOKIE = 'pos_rt';
 const cookieOpts: CookieOptions = {
   httpOnly: true,
   secure: env.NODE_ENV === 'production',
-  sameSite: 'strict',
+  // Client and API live on different onrender.com subdomains, which browsers
+  // treat as cross-site (onrender.com is a public suffix) — 'strict' would
+  // stop the refresh cookie being sent at all. 'none' requires secure: true.
+  sameSite: env.NODE_ENV === 'production' ? 'none' : 'strict',
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
 };
 
